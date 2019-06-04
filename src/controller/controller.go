@@ -18,6 +18,9 @@ import (
 var db_svr string
 var db_port string
 
+var growThreshold float32 = 0.7
+var shrinkThreshold float32 = 0.4
+
 // Types for db documents
 
 type Status struct {
@@ -81,6 +84,17 @@ func InitializeNewCell() uint64 {
 	return 100
 }
 
+func findCellWithFreeSpace(requestedSpace uint64) int {
+    var results []client
+
+    err := db.C("client").Find(nil).All(&results)
+    if err != nil {
+        // TODO: Do something about the error
+    } else {
+        fmt.Println("Results All: ", results) 
+    }
+}
+
 // REST API Functions
 
 func Retrieve(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +105,13 @@ func Retrieve(w http.ResponseWriter, r *http.Request) {
 func Store(w http.ResponseWriter, r *http.Request) {
         vars := mux.Vars(r)
         fmt.Println("Attempting to retrieve value " + vars["value"])
+	lengthOfValue := len(vars["value"])
+	cellid := findCellWithFreeSpace(lengthOfValue)
+	if(cellid == -1) {
+		
+	} else {
+
+	}
 }
 
 func main() {
