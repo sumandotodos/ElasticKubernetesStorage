@@ -34,3 +34,14 @@ spec:
         image: emiliopomaresporras/storagecell:1
         ports:
         - containerPort: 7777
+        volumeMounts:
+        - name: cellvolume
+          mountPath: /data
+  volumeClaimTemplates:
+  - metadata:
+      name: cellvolume
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
