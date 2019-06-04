@@ -1,0 +1,36 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: "storageservice"
+  labels:
+    app: storageservice
+spec:
+  ports:
+  - port: 7777
+  clusterIP: None
+  selector:
+    app: storageservice
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: storagecells
+  labels:
+    app: storage
+spec:
+  serviceName: "storageservice"
+  selector:
+    matchLabels:
+       app: storage
+  replicas: 4
+  template:
+    metadata:
+      labels:
+        app: storage
+    spec:
+      containers:
+      - name: storagecell
+        image: emiliopomaresporras/storagecell:1
+        ports:
+        - containerPort: 7777

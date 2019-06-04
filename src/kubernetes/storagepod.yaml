@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: k8s-elastic-storage-cell
+spec:
+  containers:
+  - image: emiliopomaresporras/storagecell:1
+    name: storage
+    ports:
+    - containerPort: 7777
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-elastic-storage-cell-service
+spec:
+  type: NodePort
+  ports:
+  - port: 7777
+    targetPort: 7777
+    protocol: TCP
+    name: appport
+  selector:
+    run: k8s-elastic-storage-cell-controller
