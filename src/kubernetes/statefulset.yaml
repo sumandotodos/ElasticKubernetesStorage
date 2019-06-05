@@ -4,7 +4,7 @@ kind: Service
 metadata:
   name: storage-cells-service
   labels:
-    app: storage
+    app: storage-cells-service
 spec:
   ports:
   - port: 7777
@@ -13,24 +13,22 @@ spec:
     name: cellport
   clusterIP: None
   selector:
-    app: storagecells
+    app: storage-cells-service
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: storagecells
-  labels:
-    app: storage
+  name: storagecells-sts
 spec:
   serviceName: storage-cells-service
   selector:
     matchLabels:
-       app: storage
+       app: storage-cells-service
   replicas: 4
   template:
     metadata:
       labels:
-        app: storage
+        app: storage-cells-service
     spec:
       containers:
       - name: storagecell

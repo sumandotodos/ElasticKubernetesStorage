@@ -19,6 +19,10 @@ import (
 var db_svr string
 var db_port string
 
+var cell_port string
+var cell_name_prefix string
+var cell_service_name string
+
 var growThreshold float32 = 0.7
 var shrinkThreshold float32 = 0.4
 
@@ -28,6 +32,7 @@ type Status struct {
 	NumberOfCells  int    `json:"numberofcells"`
 	TotalSpace     uint64 `json:"totalspace"`
 	CellNamePrefix string `json:"cellnameprefix"`
+	CellServiceName string `json:"cellservicename"`
 	UsedSpace      uint64 `json:"usedspace"`
 }
 
@@ -64,7 +69,7 @@ func getServerStatus(conn *DBConnectionContext) (Status, error) {
 func initializeServerStatus(conn *DBConnectionContext) error {
 	cellcapacity := InitializeNewCell()
 	_, err := conn.serverstatus.InsertOne(context.TODO(), bson.D{{"_id", 0},
-		{"numberofcells", 1}, {"totalspace", cellcapacity}, {"cellnameprefix", "storagecell"}})
+		{"numberofcells", 1}, {"totalspace", cellcapacity}, {"cellservicename", cell_service_name}, {"cellnameprefix", cell_name_prefix}})
 	if err != nil {
 		return err
 	}
@@ -84,6 +89,14 @@ func connectToDB() (*mongo.Client, error) {
 
 // Utils
 
+func makeCellName(cellid int) string {
+	return cell_name_prefix + "-" + strconv.Itoa(cellid) + "." + cell_service_name
+}
+
+func makeCellHealthcheck(cellid int) string {
+	return "http://" + makeCellName(cellid) + ":" + cell_port + "/healthcheck"
+}
+
 // Utilities
 
 func JSONResponseFromString(w http.ResponseWriter, res string) {
@@ -100,6 +113,26 @@ func addDirectoryEntry(conn *DBConnectionContext, category string, fullpath stri
 	_, err := conn.directories.InsertOne(context.TODO(), bson.D{
 		{"category", category}, {"path", fullpath}, {"cellid", cellid}})
 	return err
+}
+
+func detectLivingCells() int {
+	var err error
+	var id int
+	id = 0
+	err = nil
+	for err == nil {
+		url := makeCellHealthcheck(id)
+		fmt.Println("URL: " + url)
+		_, err = http.Get(url)
+		if err == nil {
+			fmt.Println("  >> the error was nil")
+		} else {
+			fmt.Println("  >> the error was: ")
+			fmt.Println(err)
+		}
+		id = id + 1
+	}
+	return id-1
 }
 
 func findCellWithFreeSpace(conn *DBConnectionContext, requestedSpace uint64) int {
@@ -174,7 +207,8 @@ func Store(w http.ResponseWriter, r *http.Request) {
 }
 
 func GetServiceStatus(w http.ResponseWriter, r *http.Request) {
-
+	livingCells := detectLivingCells()
+	JSONResponseFromString(w, "{\"cells-alive\":"+strconv.Itoa(livingCells)+"}")
 }
 
 func main() {
@@ -189,6 +223,18 @@ func main() {
 	if db_port == "" {
 		db_port = "27017"
 	}
+	cell_port = os.Getenv("CELL_PORT")
+	cell_service_name = os.Getenv("CELL_SERVICE_NAME")
+        cell_name_prefix = os.Getenv("CELL_NAME_PREFIX")
+	if cell_port == "" {
+		cell_port = "7777"
+	}
+        if cell_service_name == "" {
+                cell_service_name = "storage-cells-service"
+        }
+        if cell_name_prefix == "" {
+                cell_name_prefix = "storagecells-sts"
+        }
 
 	fmt.Println("Trying to connecto to " + db_svr + ":" + db_port + "...")
 	client, err := connectToDB()
@@ -216,9 +262,9 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/healthcheck", HealthCheck).Methods("GET")
+	r.HandleFunc("/status", GetServiceStatus).Methods("GET")
 	r.HandleFunc("/{key}/{value}", Store).Methods("PUT")
 	r.HandleFunc("/{key}", Retrieve).Methods("GET")
-	r.HandleFunc("/status", GetServiceStatus).Methods("GET")
 
 	if err := http.ListenAndServe(":"+ControllerPort, r); err != nil {
 		log.Fatal(err)

@@ -16,26 +16,26 @@ spec:
     ports:
     - containerPort: 27017
       protocol: TCP
-  - image: emiliopomaresporras/k8s-elastic-controller
+  - image: emiliopomaresporras/k8s-elastic-controller:6
     name: controller
     ports:
     - containerPort: 2222
       protocol: TCP
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: k8s-elastic-storage-service
-spec:
-  type: NodePort
-  ports:
-  - port: 2222
-    targetPort: 2222
-    protocol: TCP
-    name: appport
-  - port: 27017
-    targetPort: 27017
-    protocol: TCP
-    name: dbport
-  selector:
-    run: k8s-elastic-storage-controller
+#---
+#apiVersion: v1
+#kind: Service
+#metadata:
+#  name: k8s-elastic-storage-service
+#spec:
+#  type: NodePort
+#  ports:
+#  - port: 2222
+#    targetPort: 2222
+#    protocol: TCP
+#    name: appport
+#  - port: 27017
+#    targetPort: 27017
+#    protocol: TCP
+#    name: dbport
+#  selector:
+#    run: k8s-elastic-storage-controller

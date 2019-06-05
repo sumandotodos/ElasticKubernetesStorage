@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: go-client-test
+spec:
+  containers:
+  - image: emiliopomaresporras/deleteme
+    name: controller
+    ports:
+    - containerPort: 2222
+      protocol: TCP
