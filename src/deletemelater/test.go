@@ -1,13 +1,40 @@
 package main
 
 import (
-	"fmt"
-	"time"
-	"k8s.io/apimachinery/pkg/api/errors"
+	//"fmt"
+	//"time"
+	"net/http"
+	"io"
+	"strconv"
+	"log"
+	//"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"github.com/gorilla/mux"
 )
+
+func JSONResponseFromString(w http.ResponseWriter, res string) {
+        w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+        w.WriteHeader(http.StatusOK)
+        io.WriteString(w, res)
+}
+
+var clientset *kubernetes.Clientset
+
+func HealthTest(w http.ResponseWriter, r *http.Request) {
+        JSONResponseFromString(w, "{\"alive\":\"yup\"}")
+}
+
+func GetPods(w http.ResponseWriter, r *http.Request) {
+	pods, err := clientset.CoreV1().Pods("default").List(metav1.ListOptions{})
+        if err != nil {
+		
+            JSONResponseFromString(w, "{\"errorete\":\""+err.Error()+"\"}")
+        } else {
+        	JSONResponseFromString(w, "{\"number-of-pods\":"+strconv.Itoa(len(pods.Items))+"}")
+	}
+}
 
 func main() {
 
@@ -16,10 +43,21 @@ func main() {
 		panic(err.Error())
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err = kubernetes.NewForConfig(config)
 	if err != nil {
 		panic(err.Error())
 	}
+	
+	r := mux.NewRouter()
+
+	r.HandleFunc("/pods", GetPods).Methods("GET")
+	r.HandleFunc("/healthcheck", HealthTest).Methods("GET")
+
+	if err = http.ListenAndServe(":6666", r); err != nil {
+                log.Fatal(err)
+        }
+
+	/*
 	for {
 		pods, err := clientset.CoreV1().Pods("").List(metav1.ListOptions{})
 		if err != nil {
@@ -41,7 +79,8 @@ func main() {
 			fmt.Printf("Found pod\n")
 		}
 
-		time.Sleep(1000 * time.Second)
+		time.Sleep(10 * time.Second)
 	}
+	*/
 
 }

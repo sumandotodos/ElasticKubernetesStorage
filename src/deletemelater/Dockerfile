@@ -14,4 +14,4 @@ WORKDIR /go/src/github.com/agiratech/docker_imgs
 COPY --from=builder /go/src/github.com/agiratech/docker_imgs/test .
 # Run the docker_imgs command when the container starts.
 CMD ["./test"]
-EXPOSE 2222
+EXPOSE 6666

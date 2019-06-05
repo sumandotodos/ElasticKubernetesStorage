@@ -1,11 +1,29 @@
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: default-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: default
+---
 apiVersion: v1
 kind: Pod
 metadata:
   name: go-client-test
 spec:
   containers:
-  - image: emiliopomaresporras/deleteme
+  - image: emiliopomaresporras/deleteme:5
     name: controller
     ports:
-    - containerPort: 2222
+    - containerPort: 6666
       protocol: TCP
+    env:
+    - name: KUBERNETES_SERVICE_HOST
+      value: "kubernetes"
+    - name: KUBERNETES_SERVICE_PORT
+      value: "443"
