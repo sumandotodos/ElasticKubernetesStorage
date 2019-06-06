@@ -5,6 +5,7 @@ import (
 	//"time"
 	"net/http"
 	"io"
+	"os"
 	"strconv"
 	"log"
 	//"k8s.io/apimachinery/pkg/api/errors"
@@ -36,7 +37,14 @@ func GetPods(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var StatefulSetName string
+
 func main() {
+
+	StatefulSetName = os.Getenv("STSNAME")
+	if StatefulSetName == "" {
+		StatefulSetName = "storage-cells-statefulset" 
+	}
 
 	config, err := rest.InClusterConfig()
 	if err != nil {
