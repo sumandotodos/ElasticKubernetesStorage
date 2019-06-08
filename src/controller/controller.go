@@ -14,6 +14,10 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+        "k8s.io/client-go/kubernetes"
+        "k8s.io/client-go/rest"
 )
 
 var db_svr string
@@ -57,6 +61,8 @@ type DBConnectionContext struct {
 }
 
 var dbConnectionContext DBConnectionContext
+var StatefulSetName string
+var clientset *kubernetes.Clientset
 
 // DB functions
 
@@ -180,6 +186,40 @@ func addUsedStorage(conn *DBConnectionContext, amount uint64, cellid int) {
 	}
 }
 
+// kubernetes driver functions
+
+func ScaleStatefulSet(toSize int) error {
+	sts, err := clientset.AppsV1().StatefulSets("default").Get(StatefulSetName, metav1.GetOptions{})
+        if err == nil {
+                *sts.Spec.Replicas = int32(toSize)
+                _, err := clientset.AppsV1().StatefulSets("default").Update(sts)
+                if err != nil {
+                	return err
+                } else {
+                        return nil
+                }
+        } else {
+                return err
+        }
+}
+
+func PrunePVC(toAmount int) error {
+	pvcs, err := clientset.CoreV1().PersistentVolumeClaims("default").List(metav1.ListOptions{})
+	if err != nil {
+		return err
+	} else {
+		for i := toAmount ; i < len(pvcs.Items); i++ {
+			pvcToDelete := pvcs.Items[i]
+			deleteErr := clientset.CoreV1().PersistentVolumeClaims("default").Delete(pvcToDelete.ObjectMeta.Name, &metav1.DeleteOptions{})
+			if deleteErr != nil {
+				return deleteErr
+			}
+		}
+	  	return nil
+	}
+}
+
+
 // REST API Functions
 
 func Retrieve(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +276,21 @@ func main() {
                 cell_name_prefix = "storagecells-sts"
         }
 
+	StatefulSetName = os.Getenv("STSNAME")
+        if StatefulSetName == "" {
+                StatefulSetName = "storagecells-sts"
+        }
+
+        config, err := rest.InClusterConfig()
+        if err != nil {
+                panic(err.Error())
+        }
+
+        clientset, err = kubernetes.NewForConfig(config)
+        if err != nil {
+                panic(err.Error())
+        }
+
 	fmt.Println("Trying to connecto to " + db_svr + ":" + db_port + "...")
 	client, err := connectToDB()
 	err = client.Ping(context.TODO(), nil)
@@ -263,8 +318,10 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/healthcheck", HealthCheck).Methods("GET")
 	r.HandleFunc("/status", GetServiceStatus).Methods("GET")
-	r.HandleFunc("/{id}/{info}", Store).Methods("PUT")
+	r.HandleFunc("/{id}/{info}", Store).Methods("POST")
+	r.HandleFunc("/{id}/{info}", Update).Methods("PUT")
 	r.HandleFunc("/{id}/{info}", Retrieve).Methods("GET")
+	r.HandleFunc("/{id}/{info}", Delete).Methods("DELETE")
 
 	if err := http.ListenAndServe(":"+ControllerPort, r); err != nil {
 		log.Fatal(err)
