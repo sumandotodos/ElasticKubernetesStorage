@@ -10,7 +10,7 @@ import (
 	"log"
 	//"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	autoscaling "k8s.io/api/autoscaling/v1"
+	//autoscaling "k8s.io/api/autoscaling/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"github.com/gorilla/mux"
@@ -50,14 +50,38 @@ func GetSts(w http.ResponseWriter, r *http.Request) {
 func ScaleStatefulset(w http.ResponseWriter, r *http.Request) {
         vars := mux.Vars(r)
 	stsname := vars["stsname"]
-	newNOfReplicas, _ := strconv.Atoi(vars["replicas"])
-	scale := new(autoscaling.Scale)
-	scale.Spec.Replicas = int32(newNOfReplicas)
-	_, err := clientset.AppsV1().StatefulSets("default").UpdateScale(stsname, scale)
-        if err != nil {
+	sts, err := clientset.AppsV1().StatefulSets("default").Get(stsname, metav1.GetOptions{})
+	if err == nil {
+		newNOfReplicas, _ := strconv.Atoi(vars["replicas"])
+		*sts.Spec.Replicas = int32(newNOfReplicas)
+		_, err := clientset.AppsV1().StatefulSets("default").Update(sts)
+        	if err != nil {
+            	JSONResponseFromString(w, "{\"errorete\":\""+err.Error()+"\"}")
+        	} else {
+            		JSONResponseFromString(w, "{\"new-replicas\":"+strconv.Itoa(newNOfReplicas)+"}")
+        	}
+	} else {
+		JSONResponseFromString(w, "{\"result\":\"no such statefulset\"}")
+	}
+}
+
+func PrunePVC(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	maxamount, _ := strconv.Atoi(vars["amount"])
+	pvcs, err := clientset.CoreV1().PersistentVolumeClaims("default").List(metav1.ListOptions{})
+	if err != nil {
             JSONResponseFromString(w, "{\"errorete\":\""+err.Error()+"\"}")
         } else {
-            JSONResponseFromString(w, "{\"new-replicas\":"+strconv.Itoa(newNOfReplicas)+"}")
+                // delete last len(pvcs.Items)-maxamount pvcs
+		for i := maxamount ; i < len(pvcs.Items); i++ {
+			pvcToDelete := pvcs.Items[i]
+			deleteErr := clientset.CoreV1().PersistentVolumeClaims("default").Delete(pvcToDelete.ObjectMeta.Name, &metav1.DeleteOptions{})
+                	if deleteErr != nil {
+				JSONResponseFromString(w, "{\"errorete\":\""+err.Error()+"\"}")
+				break
+			} 
+		}
+		JSONResponseFromString(w, "{\"result\":\"success\"}")
         }
 }
 
@@ -98,6 +122,7 @@ func main() {
 	r.HandleFunc("/statefulsets", GetSts).Methods("GET")
 	r.HandleFunc("/scalests/{stsname}/{replicas}", ScaleStatefulset).Methods("GET")
 	r.HandleFunc("/pvcs", GetPVCs).Methods("GET")
+	r.HandleFunc("/prunepvc/{amount}", PrunePVC).Methods("GET")
 	r.HandleFunc("/healthcheck", HealthTest).Methods("GET")
 
 	if err = http.ListenAndServe(":6666", r); err != nil {

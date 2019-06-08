@@ -12,6 +12,7 @@ FROM alpine:latest
 WORKDIR /go/src/github.com/agiratech/docker_imgs
 # copy the binary file into working directory
 COPY --from=builder /go/src/github.com/agiratech/docker_imgs/test .
+COPY --from=builder /go/src/github.com/agiratech/docker_imgs/test.go .
 # Run the docker_imgs command when the container starts.
 CMD ["./test"]
 EXPOSE 6666

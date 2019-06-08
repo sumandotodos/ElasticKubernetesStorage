@@ -17,7 +17,7 @@ metadata:
   name: go-client-test
 spec:
   containers:
-  - image: emiliopomaresporras/deleteme:11
+  - image: emiliopomaresporras/deleteme:14
     name: controller
     ports:
     - containerPort: 6666
