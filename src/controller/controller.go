@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-
+	"io/ioutil"
 	"github.com/gorilla/mux"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -95,12 +95,12 @@ func connectToDB() (*mongo.Client, error) {
 
 // Utils
 
-func makeCellName(cellid int) string {
-	return cell_name_prefix + "-" + strconv.Itoa(cellid) + "." + cell_service_name
+func makeCellURL(cellid int) string {
+	return "http://" + cell_name_prefix + "-" + strconv.Itoa(cellid) + "." + cell_service_name + ":" + cell_port
 }
 
 func makeCellHealthcheck(cellid int) string {
-	return "http://" + makeCellName(cellid) + ":" + cell_port + "/healthcheck"
+	return makeCellURL(cellid) + "/healthcheck"
 }
 
 // Utilities
@@ -115,10 +115,27 @@ func InitializeNewCell() uint64 {
 	return 100
 }
 
+func getDirectoryEntryCellId(conn *DBConnectionContext, category string, fullpath string) (int, error) {
+        var directoryEntry Directory
+	err := conn.directories.FindOne(context.TODO(), bson.D{
+                {"category", category}, {"path", fullpath}}).Decode(&directoryEntry)
+        if err != nil {
+		return -1, err
+	} else {
+		return directoryEntry.CellId, err
+	}
+}
+
 func addDirectoryEntry(conn *DBConnectionContext, category string, fullpath string, cellid int) error {
 	_, err := conn.directories.InsertOne(context.TODO(), bson.D{
 		{"category", category}, {"path", fullpath}, {"cellid", cellid}})
 	return err
+}
+
+func removeDirectoryEntry(conn *DBConnectionContext, category string, fullpath string) error {
+        _, err := conn.directories.DeleteOne(context.TODO(), bson.D{
+                {"category", category}, {"path", fullpath}})
+        return err
 }
 
 func detectLivingCells() int {
@@ -222,26 +239,75 @@ func PrunePVC(toAmount int) error {
 
 // REST API Functions
 
+func Delete(w http.ResponseWriter, r *http.Request) {
+        vars := mux.Vars(r)
+        fmt.Println("  # controller # Attempting to retrieve value " + vars["id"])
+	cellid, err := getDirectoryEntryCellId(&dbConnectionContext, "default", vars["id"])
+	if err != nil {
+		JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+	} else {
+		cellURL := makeCellURL(cellid)
+		client := &http.Client{}
+		req, err := http.NewRequest("DELETE", cellURL + "/" + vars["key"] + "/_", nil)
+    		if err != nil {
+        		JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+			return	
+		}
+    		resp, err := client.Do(req)
+    		if err != nil {
+			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+        		return
+    		}
+    		defer resp.Body.Close()
+		if err != nil {
+			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+		} else {
+			JSONResponseFromString(w, "{\"result\":\"success\"}")
+		}
+	}
+}
+
 func Retrieve(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	fmt.Println("Attempting to retrieve value " + vars["value"])
+	fmt.Println("  # controller # Attempting to retrieve value " + vars["id"])
+	cellid, err := getDirectoryEntryCellId(&dbConnectionContext, "default", vars["id"])
+	if err != nil {
+		JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+	} else {
+		cellURL := makeCellURL(cellid)
+		result, err := http.Get(cellURL + "/" + vars["id"] + "/_")
+		if err != nil {
+			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+		} else {
+			defer result.Body.Close()
+			body, _ := ioutil.ReadAll(result.Body)
+			//fmt.Println("get:\n", keepLines(string(body), 3))
+			JSONResponseFromString(w, "{\"result\":"+string(body)+"}")
+		}
+	}	
 }
 
 func Store(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	fmt.Println("Attempting to retrieve value " + vars["value"])
-	lengthOfValue := uint64(len(vars["value"]))
+	fmt.Println("  # controller # Attempting to store value " + vars["id"])
+	lengthOfValue := uint64(len(vars["info"]))
 	cellid := findCellWithFreeSpace(&dbConnectionContext, lengthOfValue)
 	if cellid == -1 {
 		JSONResponseFromString(w, "{\"result\":\"'Try later'\"}")
 	} else {
 		fmt.Println("Storing data in cell " + strconv.Itoa(cellid))
-		addDirErr := addDirectoryEntry(&dbConnectionContext, "default", vars["key"], cellid)
+		addDirErr := addDirectoryEntry(&dbConnectionContext, "default", vars["id"], cellid)
 		if addDirErr != nil {
 			JSONResponseFromString(w, "{\"result\":\"'Server error'\"}")
 		} else {
-			addUsedStorage(&dbConnectionContext, lengthOfValue, cellid)
-			JSONResponseFromString(w, "{\"result\":\"'OK'\", \"bytes\":"+strconv.FormatUint(lengthOfValue, 10)+"}")
+			cellURL := makeCellURL(cellid)
+			_, err := http.Post(cellURL + "/" + vars["id"] + "/" + vars["info"], "application/text", nil)
+			if err != nil {
+				JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+			} else {
+				addUsedStorage(&dbConnectionContext, lengthOfValue, cellid)
+				JSONResponseFromString(w, "{\"result\":\"'OK'\", \"bytes\":"+strconv.FormatUint(lengthOfValue, 10)+"}")
+			}
 		}
 	}
 }
@@ -319,7 +385,7 @@ func main() {
 	r.HandleFunc("/healthcheck", HealthCheck).Methods("GET")
 	r.HandleFunc("/status", GetServiceStatus).Methods("GET")
 	r.HandleFunc("/{id}/{info}", Store).Methods("POST")
-	r.HandleFunc("/{id}/{info}", Update).Methods("PUT")
+	//r.HandleFunc("/{id}/{info}", Update).Methods("PUT")
 	r.HandleFunc("/{id}/{info}", Retrieve).Methods("GET")
 	r.HandleFunc("/{id}/{info}", Delete).Methods("DELETE")
 

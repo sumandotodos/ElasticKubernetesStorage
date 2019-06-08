@@ -7,7 +7,7 @@ import (
 	"io"
 	"fmt"
 	"net/http"
-
+	"bytes"
 	"github.com/gorilla/mux"
 )
 
@@ -16,6 +16,18 @@ const Memory = 100
 type KeyStore struct {
 	freememory int
 	storage map[string] string
+}
+
+func createKeyValuePairs(m map[string]string) string {
+	b := new(bytes.Buffer)
+	for key, value := range m {
+		fmt.Fprintf(b, "%s=\"%s\"\n", key, value)
+	}
+	return b.String()
+}
+
+func (s *KeyStore) String() string {
+	return "{\"free\":" + strconv.Itoa(s.freememory) + ", \"storage\":" + createKeyValuePairs(s.storage) + "}"
 }
 
 func (s *KeyStore) Initialize() {
@@ -81,7 +93,7 @@ func StoreItem(w http.ResponseWriter, r *http.Request) {
 	// and enforce that
 
 	vars := mux.Vars(r)
-        fmt.Println("Attempting to store value " + vars["id"] + " in key " + vars["info"])
+        fmt.Println("  # cell # Attempting to store value " + vars["info"] + " in key " + vars["id"])
         success := keyStore.Store(vars["id"], vars["info"])
         if(success) {
                 JSONResponseFromString(w, "{\"result\":\"'success'\"}")
@@ -92,7 +104,7 @@ func StoreItem(w http.ResponseWriter, r *http.Request) {
 
 func RetrieveItem(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-        fmt.Println("Attempting to retrieve value " + vars["info"])
+        fmt.Println("  # cell # Attempting to retrieve value " + vars["id"])
         success, value := keyStore.Retrieve(vars["id"])
         if(success) {
                 JSONResponseFromString(w, "{\"result\":\"OK\", \"value\":"+value+"}")
@@ -103,12 +115,17 @@ func RetrieveItem(w http.ResponseWriter, r *http.Request) {
 
 func DeleteItem(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	fmt.Println("  # cell # Attempting to delete key " + vars["id"])
         status := keyStore.Delete(vars["id"])
         if(status) {
                 JSONResponseFromString(w, "{\"result\":\"success\"}")
         } else {
                 JSONResponseFromString(w, "{\"result\":\"not ok\"}")
         }
+}
+
+func ListStore(w http.ResponseWriter, r *http.Request) {
+	JSONResponseFromString(w, "{\"result\":"+keyStore.String()+"}")
 }
 
 func UpdateItem(w http.ResponseWriter, r *http.Request) {
@@ -122,13 +139,19 @@ func UpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func Initialize(w http.ResponseWriter, r *http.Request) {
+	keyStore.Initialize()
+}
+
 func main() {
 	StoragePort := "7777"
 	keyStore = new(KeyStore)
-	keyStore.Initialize()
+	keyStore.Initialize() // cambiar a restore from file
 	r := mux.NewRouter()
 	r.HandleFunc("/cellinfo", ReportCellInfo).Methods("GET")
 	r.HandleFunc("/healthcheck", HealthCheck).Methods("GET")
+	r.HandleFunc("/initialize", Initialize).Methods("GET")
+	r.HandleFunc("/contents", ListStore).Methods("GET")
 	r.HandleFunc("/{id}/{info}", StoreItem).Methods("POST")
 	r.HandleFunc("/{id}/{info}", DeleteItem).Methods("DELETE")
 	r.HandleFunc("{id}/{info}", UpdateItem).Methods("PUT")
