@@ -263,8 +263,8 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/healthcheck", HealthCheck).Methods("GET")
 	r.HandleFunc("/status", GetServiceStatus).Methods("GET")
-	r.HandleFunc("/{key}/{value}", Store).Methods("PUT")
-	r.HandleFunc("/{key}", Retrieve).Methods("GET")
+	r.HandleFunc("/{id}/{info}", Store).Methods("PUT")
+	r.HandleFunc("/{id}/{info}", Retrieve).Methods("GET")
 
 	if err := http.ListenAndServe(":"+ControllerPort, r); err != nil {
 		log.Fatal(err)

@@ -10,6 +10,7 @@ import (
 	"log"
 	//"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	autoscaling "k8s.io/api/autoscaling/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"github.com/gorilla/mux"
@@ -37,13 +38,48 @@ func GetPods(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func GetSts(w http.ResponseWriter, r *http.Request) {
+        sts, err := clientset.AppsV1().StatefulSets("default").List(metav1.ListOptions{})
+        if err != nil {
+            JSONResponseFromString(w, "{\"errorete\":\""+err.Error()+"\"}")
+        } else {
+                JSONResponseFromString(w, "{\"number-of-stateful-sets\":"+strconv.Itoa(len(sts.Items))+"}")
+        }
+}
+
+func ScaleStatefulset(w http.ResponseWriter, r *http.Request) {
+        vars := mux.Vars(r)
+	stsname := vars["stsname"]
+	newNOfReplicas, _ := strconv.Atoi(vars["replicas"])
+	scale := new(autoscaling.Scale)
+	scale.Spec.Replicas = int32(newNOfReplicas)
+	_, err := clientset.AppsV1().StatefulSets("default").UpdateScale(stsname, scale)
+        if err != nil {
+            JSONResponseFromString(w, "{\"errorete\":\""+err.Error()+"\"}")
+        } else {
+            JSONResponseFromString(w, "{\"new-replicas\":"+strconv.Itoa(newNOfReplicas)+"}")
+        }
+}
+
+func GetPVCs(w http.ResponseWriter, r *http.Request) {
+        pvcs, err := clientset.CoreV1().PersistentVolumeClaims("default").List(metav1.ListOptions{})
+        if err != nil {
+            JSONResponseFromString(w, "{\"errorete\":\""+err.Error()+"\"}")
+        } else {
+		lastPVCString := pvcs.Items[len(pvcs.Items)-1].String()
+        	JSONResponseFromString(w, "{\"number-of-pvcs\":"+strconv.Itoa(len(pvcs.Items))+"}, "+
+		"{\"string-rep\":"+lastPVCString+"}")
+	// Items[].ObjectMeta.Name y VolumeName        
+	}
+}
+
 var StatefulSetName string
 
 func main() {
 
 	StatefulSetName = os.Getenv("STSNAME")
 	if StatefulSetName == "" {
-		StatefulSetName = "storage-cells-statefulset" 
+		StatefulSetName = "storagecells-sts" 
 	}
 
 	config, err := rest.InClusterConfig()
@@ -59,6 +95,9 @@ func main() {
 	r := mux.NewRouter()
 
 	r.HandleFunc("/pods", GetPods).Methods("GET")
+	r.HandleFunc("/statefulsets", GetSts).Methods("GET")
+	r.HandleFunc("/scalests/{stsname}/{replicas}", ScaleStatefulset).Methods("GET")
+	r.HandleFunc("/pvcs", GetPVCs).Methods("GET")
 	r.HandleFunc("/healthcheck", HealthTest).Methods("GET")
 
 	if err = http.ListenAndServe(":6666", r); err != nil {

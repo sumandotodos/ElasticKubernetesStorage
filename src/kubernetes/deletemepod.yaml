@@ -5,7 +5,7 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: view
+  name: admin
 subjects:
   - kind: ServiceAccount
     name: default
@@ -17,7 +17,7 @@ metadata:
   name: go-client-test
 spec:
   containers:
-  - image: emiliopomaresporras/deleteme:5
+  - image: emiliopomaresporras/deleteme:11
     name: controller
     ports:
     - containerPort: 6666
