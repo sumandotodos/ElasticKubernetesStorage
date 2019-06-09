@@ -19,7 +19,7 @@ spec:
   volumes:
   - name: mongodb-data
     hostPath:
-      path: /tmp/mongodb
+      path: /tmp/mongodb4
   containers:
   - image: mongo
     name: mongodb
@@ -29,7 +29,7 @@ spec:
     ports:
     - containerPort: 27017
       protocol: TCP
-  - image: emiliopomaresporras/k8s-elastic-controller:9
+  - image: emiliopomaresporras/k8s-elastic-controller:14
     name: controller
     ports:
     - containerPort: 2222
@@ -45,7 +45,7 @@ kind: Service
 metadata:
   name: k8s-elastic-storage-service
 spec:
-  type: LoadBalancer
+  type: NodePort
   ports:
   - port: 2222
     targetPort: 2222
