@@ -31,7 +31,7 @@ const (
 	ScalingDown ServerStateEnum = 3
 )
 
-const revision int = 16
+const revision int = 117
 
 var ServerState ServerStateEnum = SNAFU
 
@@ -355,10 +355,12 @@ func Retrieve(w http.ResponseWriter, r *http.Request) {
 
 func WaitForPod(podname string) {
 	fmt.Println("  >> Starting wait for pod " + podname)
+	time.Sleep(5 * time.Second)
         pod, err := clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
-        if err != nil {
-		fmt.Println("There was an error! " + err.Error())
-                return
+        for err != nil {
+		fmt.Println("There was an error! " + err.Error() + ", retrying in 10 seconds...")
+		time.Sleep(10 * time.Second)
+		pod, err = clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
         }
         for pod.Status.Phase != "Running" {
 		fmt.Println("  >> Pod is not running, delaying 10 seconds....")
