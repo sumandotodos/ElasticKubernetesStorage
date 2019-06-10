@@ -1,7 +1,7 @@
 apiVersion: rbac.authorization.k8s.io/v1beta1
 kind: ClusterRoleBinding
 metadata:
-  name: default-view
+  name: default-admin
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -11,6 +11,17 @@ subjects:
     name: default
     namespace: default
 ---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: mongodb-pv-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: v1
 kind: Pod
 metadata:
@@ -18,8 +29,8 @@ metadata:
 spec:
   volumes:
   - name: mongodb-data
-    hostPath:
-      path: /tmp/mongodb4
+    persistentVolumeClaim:
+      claimName: mongodb-pv-claim    
   containers:
   - image: mongo
     name: mongodb
@@ -29,7 +40,7 @@ spec:
     ports:
     - containerPort: 27017
       protocol: TCP
-  - image: emiliopomaresporras/k8s-elastic-controller:14
+  - image: emiliopomaresporras/k8s-elastic-controller:15
     name: controller
     ports:
     - containerPort: 2222

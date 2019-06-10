@@ -31,7 +31,7 @@ const (
 	ScalingDown ServerStateEnum = 3
 )
 
-const revision int = 15
+const revision int = 16
 
 var ServerState ServerStateEnum = SNAFU
 
@@ -49,6 +49,8 @@ var shrinkThreshold float32 = 0.4
 // Types for db documents
 
 type Status struct {
+	SUT		   uint64 `json:"sut"`
+	SDT		   uint64 `json:"sdt"`
 	NumberOfCells      int    `json:"numberofcells"`
 	TotalSpace         uint64 `json:"totalspace"`
 	CellNamePrefix     string `json:"cellnameprefix"`
@@ -82,9 +84,7 @@ var dbConnectionContext DBConnectionContext
 var StatefulSetName string
 var clientset *kubernetes.Clientset
 
-var status Status
-
-
+var serverstatus Status
 
 // DB functions
 
@@ -92,9 +92,9 @@ func pushServerStatus(conn *DBConnectionContext) error {
 	_, err := conn.serverstatus.UpdateOne(context.TODO(), bson.D{{"_id", 0}},
 		bson.D{
 			{"$set", bson.D{
-				{"numberofcells", status.NumberOfCells},
-				{"totalspace", status.TotalSpace},
-				{"usedspace", status.UsedSpace},
+				{"numberofcells", serverstatus.NumberOfCells},
+				{"totalspace", serverstatus.TotalSpace},
+				{"usedspace", serverstatus.UsedSpace},
 			},
 			},
 		})
@@ -108,23 +108,22 @@ func getServerStatus(conn *DBConnectionContext) (Status, error) {
 }
 
 func initializeServerStatus(conn *DBConnectionContext) error {
-	fmt.Println("  >> initializeServerStatus called")
 	cellcapacity := InitializeNewCell()
 	SUThreshold := (cellcapacity * 30)/100
 	SDThreshold := (cellcapacity * 60)/100
-	fmt.Println("SUThreshold :  " + strconv.Itoa(int(SUThreshold)))
-	status.NumberOfCells = 1
-    status.TotalSpace = uint64(cellcapacity)
-    status.CellNamePrefix = cell_name_prefix
-    status.CellServiceName = cell_service_name
-    status.UsedSpace = uint64(0)
-    status.ScaleUpThreshold = uint64(SUThreshold)
-	status.ScaleDownThreshold = uint64(SDThreshold)
-	fmt.Println("status.ScaleUpThreshold:  " + strconv.Itoa(int(status.ScaleUpThreshold)))
+	serverstatus.NumberOfCells = 1
+	serverstatus.SUT = SUThreshold
+	serverstatus.SDT = SDThreshold
+    	serverstatus.TotalSpace = uint64(cellcapacity)
+    	serverstatus.CellNamePrefix = cell_name_prefix
+    	serverstatus.CellServiceName = cell_service_name
+    	serverstatus.UsedSpace = uint64(0)
+    	serverstatus.ScaleUpThreshold = uint64(SUThreshold)
+	serverstatus.ScaleDownThreshold = uint64(SDThreshold)
 	_, err := conn.serverstatus.InsertOne(context.TODO(), bson.D{{"_id", 0},
-		{"numberofcells", 1}, {"usedspace", uint64(0)}, 
+		{"sut", SUThreshold}, {"sdt", SDThreshold}, {"numberofcells", 1}, {"usedspace", uint64(0)}, 
 		{"totalspace", cellcapacity}, {"cellservicename", cell_service_name}, 
-		{"suthreshold", SUThreshold}, {"sdthreshold", SDThreshold},
+		{"suthreshold", uint64(SUThreshold)}, {"sdthreshold", uint64(SDThreshold)},
 		{"cellnameprefix", cell_name_prefix}})
 	if err != nil {
 		return err
@@ -147,6 +146,13 @@ func connectToDB() (*mongo.Client, error) {
 // Utils
 
 func makeCellURL(cellid int) string {
+	// FOR LOCAL TESTING
+	//
+	//if cellid == 0 {
+	//	return "http://localhost:7777"
+	//} else {
+	//	return "shit"
+	//}
 	return "http://" + cell_name_prefix + "-" + strconv.Itoa(cellid) + "." + cell_service_name + ":" + cell_port
 }
 
@@ -216,25 +222,31 @@ func findCellWithFreeSpace(conn *DBConnectionContext, requestedSpace uint64) int
 	cursor, err := conn.cellstatus.Find(context.TODO(), bson.D{{}})
 
 	if err != nil {
-		return -2
+		fmt.Println("Error retrieving cellstatuses from DB")
+		return -1
 	} else {
 
 		for cursor.Next(context.TODO()) {
 			var elem CellStatus
 			err := cursor.Decode(&elem)
 			if err != nil {
-				return -3
+				fmt.Println("Error decoding cellstatus from db")
+				//return -1
+			} else {
+				results = append(results, &elem)
 			}
-			results = append(results, &elem)
 		}
-
+		
+		fmt.Println(strconv.Itoa(len(results)) + " found in db")
 		cursor.Close(context.TODO())
 
-		for _, element := range results {
-			fmt.Println(element)
+		for cellid, element := range results {
+			if element.FreeSpace >= requestedSpace {
+				return cellid
+			}
 		}
 
-		return 0
+		return -1
 
 	}
 }
@@ -257,6 +269,7 @@ func addUsedStorage(conn *DBConnectionContext, amount uint64, cellid int) {
 // kubernetes driver functions
 
 func ScaleStatefulSet(toSize int) error {
+	//fmt.Println("  >> scaling stateful set to size " + strconv.Itoa(toSize))
 	sts, err := clientset.AppsV1().StatefulSets("default").Get(StatefulSetName, metav1.GetOptions{})
 	if err == nil {
 		*sts.Spec.Replicas = int32(toSize)
@@ -269,9 +282,11 @@ func ScaleStatefulSet(toSize int) error {
 	} else {
 		return err
 	}
+	//return nil
 }
 
 func PrunePVC(toAmount int) error {
+	//fmt.Println("  >> pruning pvcs to size " + strconv.Itoa(toAmount))
 	pvcs, err := clientset.CoreV1().PersistentVolumeClaims("default").List(metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -285,6 +300,7 @@ func PrunePVC(toAmount int) error {
 		}
 		return nil
 	}
+	//return nil
 }
 
 // REST API Functions
@@ -337,27 +353,50 @@ func Retrieve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func ScaleUp() {
+func WaitForPod(podname string) {
+	fmt.Println("  >> Starting wait for pod " + podname)
+        pod, err := clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
+        if err != nil {
+		fmt.Println("There was an error! " + err.Error())
+                return
+        }
+        for pod.Status.Phase != "Running" {
+		fmt.Println("  >> Pod is not running, delaying 10 seconds....")
+                time.Sleep(10 * time.Second)
+                pod, err = clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
+        }
+	fmt.Println("  >> Pod is running")
+}
+
+func ScaleUp(conn *DBConnectionContext) {
 	if(ServerState == SNAFU) {
 		fmt.Println("Starting scale up...")
 		ServerState = ScalingUp
-		targetSize := status.NumberOfCells + 1
+		targetSize := serverstatus.NumberOfCells + 1
 		err := ScaleStatefulSet(targetSize)
 		if err != nil {
 			fmt.Println("Error scaling sts")
 			return
 		} else {
-			time.Sleep(10 * time.Second)
+			podname := StatefulSetName + "-" + strconv.Itoa(targetSize - 1)
+			fmt.Println("About to call WaitForPod(" + podname + ")")
+			WaitForPod(podname)
+			//time.Sleep(15 * time.Second)
 			// @TODO this delay must be replaced with
 			// waiting for the new pod to be ready!!
-			status.NumberOfCells = status.NumberOfCells + 1
-			status.TotalSpace += uint64(cellCapacity)
+			serverstatus.NumberOfCells = serverstatus.NumberOfCells + 1
+			serverstatus.TotalSpace += uint64(cellCapacity)
+			fmt.Println("  attempting to update serverstatus...")
+			fmt.Println(serverstatus)
 			err = pushServerStatus(&dbConnectionContext)
 			if err != nil {
 				fmt.Println("Error pushing server status")
 				return
 			}
-		}
+			cellcapacity := InitializeNewCell()
+			_, err = conn.cellstatus.InsertOne(context.TODO(), bson.D{{"_id", targetSize-1},
+                		{"freespace", cellcapacity}, {"capacity", cellcapacity}, {"numberoffiles", 0}})
+		}	
 		ServerState = SNAFU
 	}
 }
@@ -380,13 +419,19 @@ func Store(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
 			} else {
+				fmt.Println("Pasando por aqui.....")
 				addUsedStorage(&dbConnectionContext, lengthOfValue, cellid)
-				status.UsedSpace += lengthOfValue
-				if (status.TotalSpace - status.UsedSpace) < 30 {
-					fmt.Println("Scale up condition found");
-					go ScaleUp()
+				serverstatus.UsedSpace += lengthOfValue
+				fmt.Println("serverstatus.UsedSpace updated")
+				if (serverstatus.TotalSpace - serverstatus.UsedSpace) < serverstatus.SUT {
+					if(ServerState == SNAFU) {
+						fmt.Println("Scale up condition found")
+						go ScaleUp(&dbConnectionContext)
+					} else {
+						fmt.Println("Scale up condition found, but still scaling or something")
+					}
 				} else {
-					fmt.Println("There is still " + strconv.Itoa(int(status.TotalSpace - status.UsedSpace)) + " bytes free")
+					fmt.Println("There is still " + strconv.Itoa(int(serverstatus.TotalSpace - serverstatus.UsedSpace)) + " bytes free")
 				}
 				JSONResponseFromString(w, "{\"result\":\"'OK'\", \"bytes\":"+strconv.FormatUint(lengthOfValue, 10)+"}")
 			}
@@ -397,10 +442,11 @@ func Store(w http.ResponseWriter, r *http.Request) {
 func GetServiceStatus(w http.ResponseWriter, r *http.Request) {
 	livingCells := detectLivingCells()
 	JSONResponseFromString(w, "{\"revision\":"+strconv.Itoa(revision)+", \"cells-alive\":"+strconv.Itoa(livingCells)+", " + 
-		"\"numberofcells\":" + strconv.Itoa(status.NumberOfCells) + ", " +
-		"\"totalspace\":" + strconv.Itoa(int(status.TotalSpace)) + ", " +
-		"\"usedspace\":" + strconv.Itoa(int(status.UsedSpace)) + ", " +
-		"\"suthreshold\":" + strconv.Itoa(int(status.ScaleUpThreshold)) + "}")
+		"\"numberofcells\":" + strconv.Itoa(serverstatus.NumberOfCells) + ", " +
+		"\"totalspace\":" + strconv.Itoa(int(serverstatus.TotalSpace)) + ", " +
+		"\"usedspace\":" + strconv.Itoa(int(serverstatus.UsedSpace)) + ", " +
+		"\"suthreshold\":" + strconv.Itoa(int(serverstatus.SUT)) + ", " +
+		"\"sdthreshold\":" + strconv.Itoa(int(serverstatus.SDT)) + "}")
 }
 
 func main() {
@@ -459,15 +505,25 @@ func main() {
 	dbConnectionContext.directories = client.Database("service").Collection("directories")
 
 	fmt.Println("Trying to recover status from db...")
-	//status, staterr := getServerStatus(&dbConnectionContext)
+	status, staterr := getServerStatus(&dbConnectionContext)
+	serverstatus = status
+	if(staterr != nil) {
+		fmt.Println(" The error trying to recover status from db was: " + staterr.Error())
+	} else {
+		fmt.Println(" The error trying to recover status from db was: none")
+		fmt.Println(serverstatus)
+	}
 
-	//if (staterr != nil) || (status.NumberOfCells == 0) {
+	if (staterr != nil) {
 		fmt.Println("  ... none found, initializing")
 		_ = initializeServerStatus(&dbConnectionContext)
-		status, _ = getServerStatus(&dbConnectionContext)
-	//}
+		//status, _ = getServerStatus(&dbConnectionContext)
+		fmt.Println("       get from db after initialization: ")
+		fmt.Println(serverstatus)
+		//serverstatus = status
+	}
 
-	fmt.Println("Number of cells: " + strconv.Itoa(status.NumberOfCells))
+	fmt.Println("Number of cells: " + strconv.Itoa(serverstatus.NumberOfCells))
 
 	r := mux.NewRouter()
 	r.HandleFunc("/healthcheck", HealthCheck).Methods("GET")
@@ -482,8 +538,12 @@ func main() {
 	r.HandleFunc("/{id}/{info}", Retrieve).Methods("GET")
 	r.HandleFunc("/{id}/{info}", Delete).Methods("DELETE")
 
+	fmt.Println(" and again: ")
+        fmt.Println(serverstatus)
+
 	if err := http.ListenAndServe(":"+ControllerPort, r); err != nil {
 		log.Fatal(err)
 	}
+
 
 }

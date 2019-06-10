@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"log"
+	"time"
 	//"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	//autoscaling "k8s.io/api/autoscaling/v1"
@@ -38,6 +39,17 @@ func GetPods(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func WaitForPod(podname string) {
+	pod, err := clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
+	if err != nil {
+		return
+	}
+	for pod.Status.Phase != "Running" {
+		time.Sleep(10 * time.Second)
+		pod, err = clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
+	} 
+}
+
 func GetSts(w http.ResponseWriter, r *http.Request) {
         sts, err := clientset.AppsV1().StatefulSets("default").List(metav1.ListOptions{})
         if err != nil {
@@ -58,6 +70,7 @@ func ScaleStatefulset(w http.ResponseWriter, r *http.Request) {
         	if err != nil {
             	JSONResponseFromString(w, "{\"errorete\":\""+err.Error()+"\"}")
         	} else {
+			
             		JSONResponseFromString(w, "{\"new-replicas\":"+strconv.Itoa(newNOfReplicas)+"}")
         	}
 	} else {
