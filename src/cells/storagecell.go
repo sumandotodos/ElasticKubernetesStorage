@@ -27,7 +27,7 @@ func createKeyValuePairs(m map[string]string) string {
 			fmt.Fprintf(b, ", ")
 		}
 		firstTime = false
-		fmt.Fprintf(b, "{\"id\":\"%s\", \"payload\":\"%s\"}", key, value)
+		fmt.Fprintf(b, "{\"id\":\"%s\", \"payload\":\"%s\", \"size\":%d}", key, value, len(value))
 	}
 	fmt.Fprintf(b, "]")
 	return b.String()

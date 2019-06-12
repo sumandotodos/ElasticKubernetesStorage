@@ -92,6 +92,7 @@ type CellStatus struct {
 type Directory struct {
 	Category string `json:"category"`
 	Path     string `json:"path"`
+	Size	 uint64	`json:"size"`
 	CellId   int    `json:"cellid"`
 }
 
@@ -205,15 +206,34 @@ func getDirectoryEntryCellId(conn *DBConnectionContext, category string, fullpat
 	}
 }
 
-func addDirectoryEntry(conn *DBConnectionContext, category string, fullpath string, cellid int) error {
+func addDirectoryEntry(conn *DBConnectionContext, category string, fullpath string, size uint64, cellid int) error {
 	_, err := conn.directories.InsertOne(context.TODO(), bson.D{
-		{"category", category}, {"path", fullpath}, {"cellid", cellid}})
+		{"category", category}, {"path", fullpath}, {"size", size}, {"cellid", cellid}})
 	return err
 }
 
-func removeDirectoryEntry(conn *DBConnectionContext, category string, fullpath string) error {
-	_, err := conn.directories.DeleteOne(context.TODO(), bson.D{
-		{"category", category}, {"path", fullpath}})
+func removeDirectoryEntry(conn *DBConnectionContext, category string, fullpath string) (uint64, error) {
+	var directoryEntry Directory
+	err := conn.directories.FindOne(context.TODO(), bson.D{
+		{"category", category}, {"path", fullpath}}).Decode(&directoryEntry)
+	if err != nil {
+		return 0, err
+	} else {
+		fmt.Println(" >> removeDirectoryEntry attempting to return " + strconv.Itoa(int(directoryEntry.Size)))
+		_, err = conn.directories.DeleteOne(context.TODO(), bson.D{
+			{"category", category}, {"path", fullpath}})
+		return directoryEntry.Size, err
+	}
+}
+
+func updateDirectoryEntry(conn *DBConnectionContext, category string, fullpath string, oldcellid int, newcellid int) error {
+	_, err := conn.directories.UpdateOne(context.TODO(), bson.D{{"category", category}, {"path", fullpath}},
+		bson.D{
+			{"$set", bson.D{
+				{"cellid", newcellid},
+			},
+			},
+		})
 	return err
 }
 
@@ -273,6 +293,21 @@ func findCellWithFreeSpace(conn *DBConnectionContext, requestedSpace uint64) int
 
 		return -1
 
+	}
+}
+
+func removeUsedStorage(conn *DBConnectionContext, amount uint64, cellid int) {
+	_, err := conn.serverstatus.UpdateOne(context.TODO(), bson.D{{"_id", 0}}, bson.D{{"$inc", bson.D{{"usedspace", -int64(amount)}}}})
+	if err != nil {
+		fmt.Println(err)
+	}
+	_, err = conn.cellstatus.UpdateOne(context.TODO(), bson.D{{"_id", cellid}}, bson.D{{"$inc", bson.D{{"freespace", int64(amount)}}}})
+	if err != nil {
+		fmt.Println(err)
+	}
+	_, err = conn.cellstatus.UpdateOne(context.TODO(), bson.D{{"_id", cellid}}, bson.D{{"$inc", bson.D{{"numberoffiles", -1}}}})
+	if err != nil {
+		fmt.Println(err)
 	}
 }
 
@@ -370,7 +405,15 @@ func Delete(w http.ResponseWriter, r *http.Request) {
 		//} else {
 		//	JSONResponseFromString(w, "{\"result\":\"success\"}")
 		//}
-		err := CellDelete("default", vars["key"], cellid)
+		size, err := removeDirectoryEntry(&dbConnectionContext, "default", vars["id"])
+		fmt.Println(" Size from DB: ")
+		fmt.Println(size)
+		if err != nil {
+			// what do we do here?
+			size = 0
+		}
+		removeUsedStorage(&dbConnectionContext, size, cellid)
+		err = CellDelete("default", vars["key"], cellid)
 		if err != nil {
 			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
 		} else {
@@ -532,6 +575,9 @@ func Drain(conn *DBConnectionContext) {
 			CopyCell("default", item.Id, drainCellId, cellid)
 			fmt.Println("Updating data in cell " + strconv.Itoa(cellid))
                 	updateDirErr := updateDirectoryEntry(&dbConnectionContext, "default", item.Id, drainCellId, cellid)	
+			if updateDirErr != nil {
+				fmt.Println("Error updating directory entries!")
+			}
 			i = i + 1
 		}
 		ScaleDown(conn)
@@ -551,7 +597,7 @@ func ScaleUp(conn *DBConnectionContext) {
 		} else {
 			podname := StatefulSetName + "-" + strconv.Itoa(targetSize - 1)
 			fmt.Println("About to call WaitForPod(" + podname + ")")
-			WaitForPod(podname, 'Running')
+			WaitForPod(podname, "Running")
 			serverstatus.NumberOfCells = serverstatus.NumberOfCells + 1
 			serverstatus.TotalSpace += uint64(cellCapacity)
 			fmt.Println("  attempting to update serverstatus...")
@@ -572,14 +618,20 @@ func ScaleUp(conn *DBConnectionContext) {
 
 func Store(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	cellid, err := getDirectoryEntryCellId(&dbConnectionContext, "default", vars["id"])
+	if err == nil {
+		fmt.Println("  Value " + vars["id"] + " already exists")
+		JSONResponseFromString(w, "{\"result\":\"'Item exists'\"}")
+		return
+	}
 	fmt.Println("  # controller # Attempting to store value " + vars["id"])
 	lengthOfValue := uint64(len(vars["info"]))
-	cellid := findCellWithFreeSpace(&dbConnectionContext, lengthOfValue)
+	cellid = findCellWithFreeSpace(&dbConnectionContext, lengthOfValue)
 	if cellid == -1 {
 		JSONResponseFromString(w, "{\"result\":\"'Try later'\"}")
 	} else {
 		fmt.Println("Storing data in cell " + strconv.Itoa(cellid))
-		addDirErr := addDirectoryEntry(&dbConnectionContext, "default", vars["id"], cellid)
+		addDirErr := addDirectoryEntry(&dbConnectionContext, "default", vars["id"], lengthOfValue, cellid)
 		if addDirErr != nil {
 			JSONResponseFromString(w, "{\"result\":\"'Server error'\"}")
 		} else {
@@ -699,7 +751,7 @@ func main() {
 
 	r.HandleFunc("/post/{id}/{info}", Store).Methods("GET")
 	r.HandleFunc("/get/{id}/{info}", Retrieve).Methods("GET")
-	r.HandleFunc("/delete/{id}/{info}", Delete).Methods("DELETE")
+	r.HandleFunc("/delete/{id}/{info}", Delete).Methods("GET")
 
 	r.HandleFunc("/{id}/{info}", Store).Methods("POST")
 	//r.HandleFunc("/{id}/{info}", Update).Methods("PUT")
