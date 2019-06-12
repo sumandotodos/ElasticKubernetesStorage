@@ -20,9 +20,16 @@ type KeyStore struct {
 
 func createKeyValuePairs(m map[string]string) string {
 	b := new(bytes.Buffer)
+	firstTime := true
+	fmt.Fprintf(b, "[")
 	for key, value := range m {
-		fmt.Fprintf(b, "%s=\"%s\"\n", key, value)
+		if firstTime == false {
+			fmt.Fprintf(b, ", ")
+		}
+		firstTime = false
+		fmt.Fprintf(b, "{\"id\":\"%s\", \"payload\":\"%s\"}", key, value)
 	}
+	fmt.Fprintf(b, "]")
 	return b.String()
 }
 
@@ -132,6 +139,7 @@ func UpdateItem(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	key := vars["id"]
 	if status, value := keyStore.Retrieve(key); status {
+		keyStore.Delete(key)
 		keyStore.Store(key, value)
 		JSONResponseFromString(w, "{\"result\":\"key not found\"}")
 	} else {

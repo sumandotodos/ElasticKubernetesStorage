@@ -10,7 +10,8 @@ import (
 	"os"
 	"strconv"
 	"time"
-
+	"encoding/json"
+	
 	"github.com/gorilla/mux"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -48,23 +49,44 @@ var shrinkThreshold float32 = 0.4
 
 // Types for db documents
 
+type IdPayloadPair struct {
+	Id			string			`json:"id"`
+	Payload			string			`json:"payload"`
+	Size			uint64			`json:"size"`
+}
+
+type CellContentsDetails struct {
+	FreeSpace		uint64			`json:"free"`
+	Items			[]IdPayloadPair		`json:"storage"`
+}
+
+type CellContents struct {
+	Details			CellContentsDetails 	`json:"result"`
+}
+
+type CellItem struct {
+	id			string 
+	size			uint64
+	needsCopy		bool
+}
+
 type Status struct {
-	SUT		   uint64 `json:"sut"`
-	SDT		   uint64 `json:"sdt"`
-	NumberOfCells      int    `json:"numberofcells"`
-	TotalSpace         uint64 `json:"totalspace"`
-	CellNamePrefix     string `json:"cellnameprefix"`
-	CellServiceName    string `json:"cellservicename"`
-	UsedSpace          uint64 `json:"usedspace"`
-	ScaleUpThreshold   uint64 `json:"suthreshold"`
-	ScaleDownThreshold uint64 `json:"sdthreshold"`
+	SUT		   	uint64 			`json:"sut"`
+	SDT		   	uint64 			`json:"sdt"`
+	NumberOfCells      	int    			`json:"numberofcells"`
+	TotalSpace         	uint64 			`json:"totalspace"`
+	CellNamePrefix     	string 			`json:"cellnameprefix"`
+	CellServiceName    	string 			`json:"cellservicename"`
+	UsedSpace          	uint64 			`json:"usedspace"`
+	ScaleUpThreshold   	uint64 			`json:"suthreshold"`
+	ScaleDownThreshold 	uint64 			`json:"sdthreshold"`
 }
 
 type CellStatus struct {
-	CellId        int    `json:"_id"`
-	Capacity      uint64 `json:"capacity"`
-	FreeSpace     uint64 `json:"freespace"`
-	NumberOfFiles uint64 `json:"numberoffile"`
+	CellId        		int    			`json:"_id"`
+	Capacity      		uint64 			`json:"capacity"`
+	FreeSpace     		uint64 			`json:"freespace"`
+	NumberOfFiles 		uint64 			`json:"numberoffile"`
 }
 
 type Directory struct {
@@ -242,6 +264,9 @@ func findCellWithFreeSpace(conn *DBConnectionContext, requestedSpace uint64) int
 
 		for cellid, element := range results {
 			if element.FreeSpace >= requestedSpace {
+				if (cellid == serverstatus.NumberOfCells - 1) && (ServerState == Draining) {
+					CancelDrain()
+				}
 				return cellid
 			}
 		}
@@ -305,6 +330,21 @@ func PrunePVC(toAmount int) error {
 
 // REST API Functions
 
+func CellDelete(category string, id string, cellid int) error {
+	cellURL := makeCellURL(cellid)
+        client := &http.Client{}
+        req, err := http.NewRequest("DELETE", cellURL+"/"+id+"/_", nil)
+        if err != nil {
+        	return err
+        }
+        resp, err := client.Do(req)
+        if err != nil {
+        	return err
+        }
+        defer resp.Body.Close()
+	return nil
+}
+
 func Delete(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	fmt.Println("  # controller # Attempting to retrieve value " + vars["id"])
@@ -312,23 +352,86 @@ func Delete(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
 	} else {
-		cellURL := makeCellURL(cellid)
-		client := &http.Client{}
-		req, err := http.NewRequest("DELETE", cellURL+"/"+vars["key"]+"/_", nil)
-		if err != nil {
-			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
-			return
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
-			return
-		}
-		defer resp.Body.Close()
+		//cellURL := makeCellURL(cellid)
+		//client := &http.Client{}
+		//req, err := http.NewRequest("DELETE", cellURL+"/"+vars["key"]+"/_", nil)
+		//if err != nil {
+		//	JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+		//	return
+		//}
+		//resp, err := client.Do(req)
+		//if err != nil {
+		//	JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+		//	return
+		//}
+		//defer resp.Body.Close()
+		//if err != nil {
+		//	JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+		//} else {
+		//	JSONResponseFromString(w, "{\"result\":\"success\"}")
+		//}
+		err := CellDelete("default", vars["key"], cellid)
 		if err != nil {
 			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
 		} else {
 			JSONResponseFromString(w, "{\"result\":\"success\"}")
+		}
+	}
+}
+
+func GetCellContents(cellid int) (*CellContents, error) {
+	contents := new(CellContents)
+	cellURL := makeCellURL(cellid)
+	result, err := http.Get(cellURL + "/contents")
+	if err != nil {
+		return nil, err
+	} else {
+		defer result.Body.Close()
+		body, _ := ioutil.ReadAll(result.Body)
+		err = json.Unmarshal(body, &contents)
+		if err != nil {
+			return nil, err
+		} else {
+			return contents, nil
+		}		
+	}
+}
+
+func CellGet(category string, id string, cellid int) (string, error) {
+	cellURL := makeCellURL(cellid)
+        result, err := http.Get(cellURL + "/" + id + "/_")
+        if err != nil {
+        	return "", err
+        } else {
+                defer result.Body.Close()
+                body, _ := ioutil.ReadAll(result.Body) // change this for large files
+                //fmt.Println("get:\n", keepLines(string(body), 3))
+                //JSONResponseFromString(w, "{\"result\":"+string(body)+"}")
+		return string(body), nil
+        }
+}
+
+func CellPost(category string, id string, payload string, cellid int) error {
+	cellURL := makeCellURL(cellid)
+        _, err := http.Post(cellURL+"/"+id+"/"+payload, "application/text", nil)
+	return err
+}
+
+func CopyCell(category string, id string, fromcell int, tocell int) error {
+	fromURL := makeCellURL(fromcell)
+	toURL := makeCellURL(tocell)
+	read, errRead := http.Get(fromURL + "/" + id + "/_")
+	if errRead != nil {
+		return errRead
+	} else {
+		defer read.Body.Close()
+		body, _ := ioutil.ReadAll(read.Body)
+		payload := string(body)
+		_, errWrite := http.Post(toURL+"/"+id+"/"+payload, "application/text", nil)
+		if errWrite != nil {
+			return errWrite
+		} else {
+			return nil
 		}
 	}
 }
@@ -340,34 +443,99 @@ func Retrieve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
 	} else {
-		cellURL := makeCellURL(cellid)
-		result, err := http.Get(cellURL + "/" + vars["id"] + "/_")
+		//cellURL := makeCellURL(cellid)
+		//result, err := http.Get(cellURL + "/" + vars["id"] + "/_")
+		//if err != nil {
+		//	JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+		//} else {
+		//	defer result.Body.Close()
+		//	body, _ := ioutil.ReadAll(result.Body)
+		//	//fmt.Println("get:\n", keepLines(string(body), 3))
+		//	JSONResponseFromString(w, "{\"result\":"+string(body)+"}")
+		//}
+		res, err := CellGet("default", vars["id"], cellid)
 		if err != nil {
-			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")	
 		} else {
-			defer result.Body.Close()
-			body, _ := ioutil.ReadAll(result.Body)
-			//fmt.Println("get:\n", keepLines(string(body), 3))
-			JSONResponseFromString(w, "{\"result\":"+string(body)+"}")
+			JSONResponseFromString(w, "{\"result\":"+res+"}")
 		}
 	}
 }
 
-func WaitForPod(podname string) {
-	fmt.Println("  >> Starting wait for pod " + podname)
+func WaitForPod(podname string, podstatus string) {
+	fmt.Println("  >> Starting wait for pod " + podname + " to become " + podstatus)
 	time.Sleep(5 * time.Second)
         pod, err := clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
         for err != nil {
+		if podstatus == "Not exist" {
+			fmt.Println("  >> Pod does not exist ")
+			return
+		}
 		fmt.Println("There was an error! " + err.Error() + ", retrying in 10 seconds...")
 		time.Sleep(10 * time.Second)
 		pod, err = clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
         }
-        for pod.Status.Phase != "Running" {
-		fmt.Println("  >> Pod is not running, delaying 10 seconds....")
+        for string(pod.Status.Phase) != podstatus {
+		fmt.Println("  >> Pod is not "+podstatus+", delaying 10 seconds....")
                 time.Sleep(10 * time.Second)
                 pod, err = clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
         }
-	fmt.Println("  >> Pod is running")
+	fmt.Println("  >> Pod is " + podstatus)
+}
+
+
+func ScaleDown(conn *DBConnectionContext) {
+	if(ServerState == Draining) {
+		ServerState = ScalingDown
+		targetSize := serverstatus.NumberOfCells - 1
+		err := ScaleStatefulSet(targetSize)
+                if err != nil {
+                        fmt.Println("Error scaling sts")
+                        ServerState = SNAFU
+                        return
+                } else {
+			podname := StatefulSetName + "-" + strconv.Itoa(targetSize - 1)
+                        WaitForPod(podname, "Not exist")
+                        serverstatus.NumberOfCells = serverstatus.NumberOfCells - 1
+                        serverstatus.TotalSpace -= uint64(cellCapacity)
+                        err = pushServerStatus(&dbConnectionContext)
+                        if err != nil {
+                                fmt.Println("Error pushing server status")
+                                ServerState = SNAFU
+                                return
+                        }
+                        _, err = conn.cellstatus.DeleteOne(context.TODO(), bson.D{{"_id", targetSize}})
+			ServerState = SNAFU	
+		}
+	}
+}
+
+func CancelDrain() {
+	ServerState = SNAFU
+}
+
+func Drain(conn *DBConnectionContext) {
+	if(ServerState == SNAFU) {
+		drainCellId := serverstatus.NumberOfCells - 1
+		fmt.Println("Starting drain...")
+		ServerState = Draining
+		itemsToMove, err := GetCellContents(drainCellId)
+		if err != nil {
+			ServerState = SNAFU
+			return
+		}
+		l := len(itemsToMove.Details.Items)
+		i := 0
+		for (ServerState == Draining) && (i<l) {
+			item := itemsToMove.Details.Items[i]
+			cellid := findCellWithFreeSpace(&dbConnectionContext, item.Size)
+			CopyCell("default", item.Id, drainCellId, cellid)
+			fmt.Println("Updating data in cell " + strconv.Itoa(cellid))
+                	updateDirErr := updateDirectoryEntry(&dbConnectionContext, "default", item.Id, drainCellId, cellid)	
+			i = i + 1
+		}
+		ScaleDown(conn)
+	}
 }
 
 func ScaleUp(conn *DBConnectionContext) {
@@ -378,14 +546,12 @@ func ScaleUp(conn *DBConnectionContext) {
 		err := ScaleStatefulSet(targetSize)
 		if err != nil {
 			fmt.Println("Error scaling sts")
+			ServerState = SNAFU
 			return
 		} else {
 			podname := StatefulSetName + "-" + strconv.Itoa(targetSize - 1)
 			fmt.Println("About to call WaitForPod(" + podname + ")")
-			WaitForPod(podname)
-			//time.Sleep(15 * time.Second)
-			// @TODO this delay must be replaced with
-			// waiting for the new pod to be ready!!
+			WaitForPod(podname, 'Running')
 			serverstatus.NumberOfCells = serverstatus.NumberOfCells + 1
 			serverstatus.TotalSpace += uint64(cellCapacity)
 			fmt.Println("  attempting to update serverstatus...")
@@ -393,6 +559,7 @@ func ScaleUp(conn *DBConnectionContext) {
 			err = pushServerStatus(&dbConnectionContext)
 			if err != nil {
 				fmt.Println("Error pushing server status")
+				ServerState = SNAFU
 				return
 			}
 			cellcapacity := InitializeNewCell()
@@ -421,7 +588,6 @@ func Store(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
 			} else {
-				fmt.Println("Pasando por aqui.....")
 				addUsedStorage(&dbConnectionContext, lengthOfValue, cellid)
 				serverstatus.UsedSpace += lengthOfValue
 				fmt.Println("serverstatus.UsedSpace updated")
