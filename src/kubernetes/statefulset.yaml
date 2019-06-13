@@ -32,7 +32,7 @@ spec:
     spec:
       containers:
       - name: storagecell
-        image: emiliopomaresporras/storagecell:3
+        image: emiliopomaresporras/storagecell:4
         ports:
         - containerPort: 7777
         volumeMounts:

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -10,8 +11,7 @@ import (
 	"os"
 	"strconv"
 	"time"
-	"encoding/json"
-	
+
 	"github.com/gorilla/mux"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -50,49 +50,51 @@ var shrinkThreshold float32 = 0.4
 // Types for db documents
 
 type IdPayloadPair struct {
-	Id			string			`json:"id"`
-	Payload			string			`json:"payload"`
-	Size			uint64			`json:"size"`
+	Id      string `json:"id"`
+	Payload string `json:"payload"`
+	Size    int64 	`json:"size"`
 }
 
 type CellContentsDetails struct {
-	FreeSpace		uint64			`json:"free"`
-	Items			[]IdPayloadPair		`json:"storage"`
+	FreeSpace int64          `json:"free"`
+	Items     []IdPayloadPair `json:"storage"`
 }
 
 type CellContents struct {
-	Details			CellContentsDetails 	`json:"result"`
+	Details CellContentsDetails `json:"result"`
 }
 
 type CellItem struct {
-	id			string 
-	size			uint64
-	needsCopy		bool
+	id        string
+	size      int64
+	needsCopy bool
 }
 
 type Status struct {
-	SUT		   	uint64 			`json:"sut"`
-	SDT		   	uint64 			`json:"sdt"`
-	NumberOfCells      	int    			`json:"numberofcells"`
-	TotalSpace         	uint64 			`json:"totalspace"`
-	CellNamePrefix     	string 			`json:"cellnameprefix"`
-	CellServiceName    	string 			`json:"cellservicename"`
-	UsedSpace          	uint64 			`json:"usedspace"`
-	ScaleUpThreshold   	uint64 			`json:"suthreshold"`
-	ScaleDownThreshold 	uint64 			`json:"sdthreshold"`
+	SUT                  int64 `json:"sut"`
+	SDT                  int64 `json:"sdt"`
+	CDT                  int64 `json:"cdt"`
+	NumberOfCells        int    `json:"numberofcells"`
+	TotalSpace           int64 `json:"totalspace"`
+	CellNamePrefix       string `json:"cellnameprefix"`
+	CellServiceName      string `json:"cellservicename"`
+	UsedSpace            int64 `json:"usedspace"`
+	ScaleUpThreshold     int64 `json:"suthreshold"`
+	ScaleDownThreshold   int64 `json:"sdthreshold"`
+	CancelDrainThreshold int64 `json:"cdthreshold"`
 }
 
 type CellStatus struct {
-	CellId        		int    			`json:"_id"`
-	Capacity      		uint64 			`json:"capacity"`
-	FreeSpace     		uint64 			`json:"freespace"`
-	NumberOfFiles 		uint64 			`json:"numberoffile"`
+	CellId        int    `json:"_id"`
+	Capacity      int64 `json:"capacity"`
+	FreeSpace     int64 `json:"freespace"`
+	NumberOfFiles int64 `json:"numberoffile"`
 }
 
 type Directory struct {
 	Category string `json:"category"`
 	Path     string `json:"path"`
-	Size	 uint64	`json:"size"`
+	Size     int64 `json:"size"`
 	CellId   int    `json:"cellid"`
 }
 
@@ -104,12 +106,82 @@ type DBConnectionContext struct {
 }
 
 var dbConnectionContext DBConnectionContext
-var StatefulSetName string
 var clientset *kubernetes.Clientset
-
+var StatefulSetName string
 var serverstatus Status
 
-// DB functions
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//																														//
+// Misc functions																										//
+//																														//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+func JSONResponseFromString(w http.ResponseWriter, res string) {
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, res)
+}
+
+func makeCellURL(cellid int) string {
+	// FOR LOCAL TESTING
+	//
+	//if cellid == 0 {
+	//	return "http://localhost:7777"
+	//} else {
+	//	return "shit"
+	//}
+	return "http://" + cell_name_prefix + "-" + strconv.Itoa(cellid) + "." + cell_service_name + ":" + cell_port
+}
+
+func makeCellHealthcheck(cellid int) string {
+	return makeCellURL(cellid) + "/healthcheck"
+}
+
+func HealthCheck(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintln(w, "{'status':'alive'}")
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//																														//
+// DB functions																											//
+//																														//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+func connectToDB() (*mongo.Client, error) {
+	clientOptions := options.Client().ApplyURI("mongodb://" + db_svr + ":" + db_port)
+	return mongo.Connect(context.TODO(), clientOptions)
+}
+
+func initializeServerStatus(conn *DBConnectionContext) error {
+	cellcapacity := InitializeNewCell()
+	SUThreshold := (cellcapacity * 40) / 100
+	SDThreshold := cellcapacity + (cellcapacity*60)/100
+	CDThreshold := cellcapacity + (cellcapacity*20)/100
+	serverstatus.NumberOfCells = 1
+	serverstatus.SUT = SUThreshold
+	serverstatus.SDT = SDThreshold
+	serverstatus.CDT = CDThreshold
+	serverstatus.TotalSpace = int64(cellcapacity)
+	serverstatus.CellNamePrefix = cell_name_prefix
+	serverstatus.CellServiceName = cell_service_name
+	serverstatus.UsedSpace = int64(0)
+	serverstatus.ScaleUpThreshold = int64(SUThreshold)
+	serverstatus.ScaleDownThreshold = int64(SDThreshold)
+	serverstatus.CancelDrainThreshold = int64(CDThreshold)
+	serverstatus.ScaleDownThreshold = int64(SDThreshold)
+	_, err := conn.serverstatus.InsertOne(context.TODO(), bson.D{{"_id", 0},
+		{"sut", SUThreshold}, {"sdt", SDThreshold}, {"numberofcells", 1}, {"usedspace", int64(0)},
+		{"totalspace", cellcapacity}, {"cellservicename", cell_service_name},
+		{"suthreshold", int64(SUThreshold)}, {"sdthreshold", int64(SDThreshold)},
+		{"cdthreshold", int64(CDThreshold)}, {"cellnameprefix", cell_name_prefix}})
+	if err != nil {
+		return err
+	}
+	_, err = conn.cellstatus.InsertOne(context.TODO(), bson.D{{"_id", 0},
+		{"freespace", cellcapacity}, {"capacity", cellcapacity}, {"numberoffiles", 0}})
+
+	return err
+}
 
 func pushServerStatus(conn *DBConnectionContext) error {
 	_, err := conn.serverstatus.UpdateOne(context.TODO(), bson.D{{"_id", 0}},
@@ -130,71 +202,6 @@ func getServerStatus(conn *DBConnectionContext) (Status, error) {
 	return statusInDB, err
 }
 
-func initializeServerStatus(conn *DBConnectionContext) error {
-	cellcapacity := InitializeNewCell()
-	SUThreshold := (cellcapacity * 30)/100
-	SDThreshold := (cellcapacity * 60)/100
-	serverstatus.NumberOfCells = 1
-	serverstatus.SUT = SUThreshold
-	serverstatus.SDT = SDThreshold
-    	serverstatus.TotalSpace = uint64(cellcapacity)
-    	serverstatus.CellNamePrefix = cell_name_prefix
-    	serverstatus.CellServiceName = cell_service_name
-    	serverstatus.UsedSpace = uint64(0)
-    	serverstatus.ScaleUpThreshold = uint64(SUThreshold)
-	serverstatus.ScaleDownThreshold = uint64(SDThreshold)
-	_, err := conn.serverstatus.InsertOne(context.TODO(), bson.D{{"_id", 0},
-		{"sut", SUThreshold}, {"sdt", SDThreshold}, {"numberofcells", 1}, {"usedspace", uint64(0)}, 
-		{"totalspace", cellcapacity}, {"cellservicename", cell_service_name}, 
-		{"suthreshold", uint64(SUThreshold)}, {"sdthreshold", uint64(SDThreshold)},
-		{"cellnameprefix", cell_name_prefix}})
-	if err != nil {
-		return err
-	}
-	_, err = conn.cellstatus.InsertOne(context.TODO(), bson.D{{"_id", 0},
-		{"freespace", cellcapacity}, {"capacity", cellcapacity}, {"numberoffiles", 0}})
-
-	return err
-}
-
-func HealthCheck(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, "{'status':'alive'}")
-}
-
-func connectToDB() (*mongo.Client, error) {
-	clientOptions := options.Client().ApplyURI("mongodb://" + db_svr + ":" + db_port)
-	return mongo.Connect(context.TODO(), clientOptions)
-}
-
-// Utils
-
-func makeCellURL(cellid int) string {
-	// FOR LOCAL TESTING
-	//
-	//if cellid == 0 {
-	//	return "http://localhost:7777"
-	//} else {
-	//	return "shit"
-	//}
-	return "http://" + cell_name_prefix + "-" + strconv.Itoa(cellid) + "." + cell_service_name + ":" + cell_port
-}
-
-func makeCellHealthcheck(cellid int) string {
-	return makeCellURL(cellid) + "/healthcheck"
-}
-
-// Utilities
-
-func JSONResponseFromString(w http.ResponseWriter, res string) {
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(http.StatusOK)
-	io.WriteString(w, res)
-}
-
-func InitializeNewCell() uint64 {
-	return uint64(cellCapacity)
-}
-
 func getDirectoryEntryCellId(conn *DBConnectionContext, category string, fullpath string) (int, error) {
 	var directoryEntry Directory
 	err := conn.directories.FindOne(context.TODO(), bson.D{
@@ -206,13 +213,13 @@ func getDirectoryEntryCellId(conn *DBConnectionContext, category string, fullpat
 	}
 }
 
-func addDirectoryEntry(conn *DBConnectionContext, category string, fullpath string, size uint64, cellid int) error {
+func addDirectoryEntry(conn *DBConnectionContext, category string, fullpath string, size int64, cellid int) error {
 	_, err := conn.directories.InsertOne(context.TODO(), bson.D{
 		{"category", category}, {"path", fullpath}, {"size", size}, {"cellid", cellid}})
 	return err
 }
 
-func removeDirectoryEntry(conn *DBConnectionContext, category string, fullpath string) (uint64, error) {
+func removeDirectoryEntry(conn *DBConnectionContext, category string, fullpath string) (int64, error) {
 	var directoryEntry Directory
 	err := conn.directories.FindOne(context.TODO(), bson.D{
 		{"category", category}, {"path", fullpath}}).Decode(&directoryEntry)
@@ -237,27 +244,7 @@ func updateDirectoryEntry(conn *DBConnectionContext, category string, fullpath s
 	return err
 }
 
-func detectLivingCells() int {
-	var err error
-	var id int
-	id = 0
-	err = nil
-	for err == nil {
-		url := makeCellHealthcheck(id)
-		fmt.Println("URL: " + url)
-		_, err = http.Get(url)
-		if err == nil {
-			fmt.Println("  >> the error was nil")
-		} else {
-			fmt.Println("  >> the error was: ")
-			fmt.Println(err)
-		}
-		id = id + 1
-	}
-	return id - 1
-}
-
-func findCellWithFreeSpace(conn *DBConnectionContext, requestedSpace uint64) int {
+func findCellWithFreeSpace(conn *DBConnectionContext, requestedSpace int64) int {
 
 	var results []*CellStatus
 
@@ -278,13 +265,13 @@ func findCellWithFreeSpace(conn *DBConnectionContext, requestedSpace uint64) int
 				results = append(results, &elem)
 			}
 		}
-		
+
 		fmt.Println(strconv.Itoa(len(results)) + " found in db")
 		cursor.Close(context.TODO())
 
 		for cellid, element := range results {
 			if element.FreeSpace >= requestedSpace {
-				if (cellid == serverstatus.NumberOfCells - 1) && (ServerState == Draining) {
+				if (cellid == serverstatus.NumberOfCells-1) && (ServerState == Draining) {
 					CancelDrain()
 				}
 				return cellid
@@ -296,7 +283,7 @@ func findCellWithFreeSpace(conn *DBConnectionContext, requestedSpace uint64) int
 	}
 }
 
-func removeUsedStorage(conn *DBConnectionContext, amount uint64, cellid int) {
+func removeUsedStorage(conn *DBConnectionContext, amount int64, cellid int) {
 	_, err := conn.serverstatus.UpdateOne(context.TODO(), bson.D{{"_id", 0}}, bson.D{{"$inc", bson.D{{"usedspace", -int64(amount)}}}})
 	if err != nil {
 		fmt.Println(err)
@@ -309,9 +296,10 @@ func removeUsedStorage(conn *DBConnectionContext, amount uint64, cellid int) {
 	if err != nil {
 		fmt.Println(err)
 	}
+	serverstatus.UsedSpace -= amount
 }
 
-func addUsedStorage(conn *DBConnectionContext, amount uint64, cellid int) {
+func addUsedStorage(conn *DBConnectionContext, amount int64, cellid int) {
 	_, err := conn.serverstatus.UpdateOne(context.TODO(), bson.D{{"_id", 0}}, bson.D{{"$inc", bson.D{{"usedspace", amount}}}})
 	if err != nil {
 		fmt.Println(err)
@@ -324,9 +312,121 @@ func addUsedStorage(conn *DBConnectionContext, amount uint64, cellid int) {
 	if err != nil {
 		fmt.Println(err)
 	}
+	serverstatus.UsedSpace += amount
 }
 
-// kubernetes driver functions
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//																														//
+// Cell functions																										//
+//																														//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+func InitializeNewCell() int64 {
+	return int64(cellCapacity)
+}
+
+func CellDelete(category string, id string, cellid int) error {
+	cellURL := makeCellURL(cellid)
+	client := &http.Client{}
+	req, err := http.NewRequest("DELETE", cellURL+"/"+id+"/_", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func GetCellContents(cellid int) (*CellContents, error) {
+	contents := new(CellContents)
+	cellURL := makeCellURL(cellid)
+	result, err := http.Get(cellURL + "/contents")
+	fmt.Println("  >> GetCellContents: Calling " + cellURL)
+	if err != nil {
+		fmt.Println("  >> GetCellContents: 1) error")
+		return nil, err
+	} else {
+		fmt.Println("  >> GetCellContents: http read ok")
+		defer result.Body.Close()
+		body, _ := ioutil.ReadAll(result.Body)
+		err = json.Unmarshal(body, &contents)
+		if err != nil {
+			fmt.Println("  >> GetCellContents: error unmarshalling result")
+			return nil, err
+		} else {
+			fmt.Println("  >> GetCellContents: Contents OK")
+			return contents, nil
+		}
+	}
+}
+
+func CellGet(category string, id string, cellid int) (string, error) {
+	cellURL := makeCellURL(cellid)
+	result, err := http.Get(cellURL + "/" + id + "/_")
+	if err != nil {
+		return "", err
+	} else {
+		defer result.Body.Close()
+		body, _ := ioutil.ReadAll(result.Body) // change this for large files
+		//fmt.Println("get:\n", keepLines(string(body), 3))
+		//JSONResponseFromString(w, "{\"result\":"+string(body)+"}")
+		return string(body), nil
+	}
+}
+
+func CellPost(category string, id string, payload string, cellid int) error {
+	cellURL := makeCellURL(cellid)
+	_, err := http.Post(cellURL+"/"+id+"/"+payload, "application/text", nil)
+	return err
+}
+
+func CopyCell(category string, id string, fromcell int, tocell int) error {
+	fromURL := makeCellURL(fromcell)
+	toURL := makeCellURL(tocell)
+	read, errRead := http.Get(fromURL + "/" + id + "/_")
+	if errRead != nil {
+		return errRead
+	} else {
+		defer read.Body.Close()
+		body, _ := ioutil.ReadAll(read.Body)
+		payload := string(body)
+		_, errWrite := http.Post(toURL+"/"+id+"/"+payload, "application/text", nil)
+		if errWrite != nil {
+			return errWrite
+		} else {
+			return nil
+		}
+	}
+}
+
+func detectLivingCells() int {
+	var err error
+	var id int
+	id = 0
+	err = nil
+	for err == nil {
+		url := makeCellHealthcheck(id)
+		fmt.Println("URL: " + url)
+		_, err = http.Get(url)
+		if err == nil {
+			fmt.Println("  >> the error was nil")
+		} else {
+			fmt.Println("  >> the error was: ")
+			fmt.Println(err)
+		}
+		id = id + 1
+	}
+	return id - 1
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//																														//
+// Kubernetes functions																									//
+//																														//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 func ScaleStatefulSet(toSize int) error {
 	//fmt.Println("  >> scaling stateful set to size " + strconv.Itoa(toSize))
@@ -363,229 +463,38 @@ func PrunePVC(toAmount int) error {
 	//return nil
 }
 
-// REST API Functions
-
-func CellDelete(category string, id string, cellid int) error {
-	cellURL := makeCellURL(cellid)
-        client := &http.Client{}
-        req, err := http.NewRequest("DELETE", cellURL+"/"+id+"/_", nil)
-        if err != nil {
-        	return err
-        }
-        resp, err := client.Do(req)
-        if err != nil {
-        	return err
-        }
-        defer resp.Body.Close()
-	return nil
-}
-
-func Delete(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	fmt.Println("  # controller # Attempting to retrieve value " + vars["id"])
-	cellid, err := getDirectoryEntryCellId(&dbConnectionContext, "default", vars["id"])
-	if err != nil {
-		JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
-	} else {
-		//cellURL := makeCellURL(cellid)
-		//client := &http.Client{}
-		//req, err := http.NewRequest("DELETE", cellURL+"/"+vars["key"]+"/_", nil)
-		//if err != nil {
-		//	JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
-		//	return
-		//}
-		//resp, err := client.Do(req)
-		//if err != nil {
-		//	JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
-		//	return
-		//}
-		//defer resp.Body.Close()
-		//if err != nil {
-		//	JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
-		//} else {
-		//	JSONResponseFromString(w, "{\"result\":\"success\"}")
-		//}
-		size, err := removeDirectoryEntry(&dbConnectionContext, "default", vars["id"])
-		fmt.Println(" Size from DB: ")
-		fmt.Println(size)
-		if err != nil {
-			// what do we do here?
-			size = 0
-		}
-		removeUsedStorage(&dbConnectionContext, size, cellid)
-		err = CellDelete("default", vars["key"], cellid)
-		if err != nil {
-			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
-		} else {
-			JSONResponseFromString(w, "{\"result\":\"success\"}")
-		}
-	}
-}
-
-func GetCellContents(cellid int) (*CellContents, error) {
-	contents := new(CellContents)
-	cellURL := makeCellURL(cellid)
-	result, err := http.Get(cellURL + "/contents")
-	if err != nil {
-		return nil, err
-	} else {
-		defer result.Body.Close()
-		body, _ := ioutil.ReadAll(result.Body)
-		err = json.Unmarshal(body, &contents)
-		if err != nil {
-			return nil, err
-		} else {
-			return contents, nil
-		}		
-	}
-}
-
-func CellGet(category string, id string, cellid int) (string, error) {
-	cellURL := makeCellURL(cellid)
-        result, err := http.Get(cellURL + "/" + id + "/_")
-        if err != nil {
-        	return "", err
-        } else {
-                defer result.Body.Close()
-                body, _ := ioutil.ReadAll(result.Body) // change this for large files
-                //fmt.Println("get:\n", keepLines(string(body), 3))
-                //JSONResponseFromString(w, "{\"result\":"+string(body)+"}")
-		return string(body), nil
-        }
-}
-
-func CellPost(category string, id string, payload string, cellid int) error {
-	cellURL := makeCellURL(cellid)
-        _, err := http.Post(cellURL+"/"+id+"/"+payload, "application/text", nil)
-	return err
-}
-
-func CopyCell(category string, id string, fromcell int, tocell int) error {
-	fromURL := makeCellURL(fromcell)
-	toURL := makeCellURL(tocell)
-	read, errRead := http.Get(fromURL + "/" + id + "/_")
-	if errRead != nil {
-		return errRead
-	} else {
-		defer read.Body.Close()
-		body, _ := ioutil.ReadAll(read.Body)
-		payload := string(body)
-		_, errWrite := http.Post(toURL+"/"+id+"/"+payload, "application/text", nil)
-		if errWrite != nil {
-			return errWrite
-		} else {
-			return nil
-		}
-	}
-}
-
-func Retrieve(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	fmt.Println("  # controller # Attempting to retrieve value " + vars["id"])
-	cellid, err := getDirectoryEntryCellId(&dbConnectionContext, "default", vars["id"])
-	if err != nil {
-		JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
-	} else {
-		//cellURL := makeCellURL(cellid)
-		//result, err := http.Get(cellURL + "/" + vars["id"] + "/_")
-		//if err != nil {
-		//	JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
-		//} else {
-		//	defer result.Body.Close()
-		//	body, _ := ioutil.ReadAll(result.Body)
-		//	//fmt.Println("get:\n", keepLines(string(body), 3))
-		//	JSONResponseFromString(w, "{\"result\":"+string(body)+"}")
-		//}
-		res, err := CellGet("default", vars["id"], cellid)
-		if err != nil {
-			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")	
-		} else {
-			JSONResponseFromString(w, "{\"result\":"+res+"}")
-		}
-	}
-}
-
 func WaitForPod(podname string, podstatus string) {
+	if podstatus == "Not exists" {
+		podstatus = ""
+	}
 	fmt.Println("  >> Starting wait for pod " + podname + " to become " + podstatus)
 	time.Sleep(5 * time.Second)
-        pod, err := clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
-        for err != nil {
-		if podstatus == "Not exist" {
+	pod, err := clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
+	for err != nil {
+		if podstatus == "" {
 			fmt.Println("  >> Pod does not exist ")
 			return
 		}
 		fmt.Println("There was an error! " + err.Error() + ", retrying in 10 seconds...")
 		time.Sleep(10 * time.Second)
 		pod, err = clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
-        }
-        for string(pod.Status.Phase) != podstatus {
-		fmt.Println("  >> Pod is not "+podstatus+", delaying 10 seconds....")
-                time.Sleep(10 * time.Second)
-                pod, err = clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
-        }
+	}
+	for string(pod.Status.Phase) != podstatus {
+		fmt.Println("  >> Pod is not " + podstatus + ", rather it is " + string(pod.Status.Phase) + ",  delaying 10 seconds....")
+		time.Sleep(10 * time.Second)
+		pod, err = clientset.CoreV1().Pods("default").Get(podname, metav1.GetOptions{})
+	}
 	fmt.Println("  >> Pod is " + podstatus)
 }
 
-
-func ScaleDown(conn *DBConnectionContext) {
-	if(ServerState == Draining) {
-		ServerState = ScalingDown
-		targetSize := serverstatus.NumberOfCells - 1
-		err := ScaleStatefulSet(targetSize)
-                if err != nil {
-                        fmt.Println("Error scaling sts")
-                        ServerState = SNAFU
-                        return
-                } else {
-			podname := StatefulSetName + "-" + strconv.Itoa(targetSize - 1)
-                        WaitForPod(podname, "Not exist")
-                        serverstatus.NumberOfCells = serverstatus.NumberOfCells - 1
-                        serverstatus.TotalSpace -= uint64(cellCapacity)
-                        err = pushServerStatus(&dbConnectionContext)
-                        if err != nil {
-                                fmt.Println("Error pushing server status")
-                                ServerState = SNAFU
-                                return
-                        }
-                        _, err = conn.cellstatus.DeleteOne(context.TODO(), bson.D{{"_id", targetSize}})
-			ServerState = SNAFU	
-		}
-	}
-}
-
-func CancelDrain() {
-	ServerState = SNAFU
-}
-
-func Drain(conn *DBConnectionContext) {
-	if(ServerState == SNAFU) {
-		drainCellId := serverstatus.NumberOfCells - 1
-		fmt.Println("Starting drain...")
-		ServerState = Draining
-		itemsToMove, err := GetCellContents(drainCellId)
-		if err != nil {
-			ServerState = SNAFU
-			return
-		}
-		l := len(itemsToMove.Details.Items)
-		i := 0
-		for (ServerState == Draining) && (i<l) {
-			item := itemsToMove.Details.Items[i]
-			cellid := findCellWithFreeSpace(&dbConnectionContext, item.Size)
-			CopyCell("default", item.Id, drainCellId, cellid)
-			fmt.Println("Updating data in cell " + strconv.Itoa(cellid))
-                	updateDirErr := updateDirectoryEntry(&dbConnectionContext, "default", item.Id, drainCellId, cellid)	
-			if updateDirErr != nil {
-				fmt.Println("Error updating directory entries!")
-			}
-			i = i + 1
-		}
-		ScaleDown(conn)
-	}
-}
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//																														//
+// State functions																										//
+//																														//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 func ScaleUp(conn *DBConnectionContext) {
-	if(ServerState == SNAFU) {
+	if ServerState == SNAFU {
 		fmt.Println("Starting scale up...")
 		ServerState = ScalingUp
 		targetSize := serverstatus.NumberOfCells + 1
@@ -595,11 +504,11 @@ func ScaleUp(conn *DBConnectionContext) {
 			ServerState = SNAFU
 			return
 		} else {
-			podname := StatefulSetName + "-" + strconv.Itoa(targetSize - 1)
+			podname := StatefulSetName + "-" + strconv.Itoa(targetSize-1)
 			fmt.Println("About to call WaitForPod(" + podname + ")")
 			WaitForPod(podname, "Running")
 			serverstatus.NumberOfCells = serverstatus.NumberOfCells + 1
-			serverstatus.TotalSpace += uint64(cellCapacity)
+			serverstatus.TotalSpace += int64(cellCapacity)
 			fmt.Println("  attempting to update serverstatus...")
 			fmt.Println(serverstatus)
 			err = pushServerStatus(&dbConnectionContext)
@@ -609,10 +518,101 @@ func ScaleUp(conn *DBConnectionContext) {
 				return
 			}
 			cellcapacity := InitializeNewCell()
-			_, err = conn.cellstatus.InsertOne(context.TODO(), bson.D{{"_id", targetSize-1},
-                		{"freespace", cellcapacity}, {"capacity", cellcapacity}, {"numberoffiles", 0}})
-		}	
+			_, err = conn.cellstatus.InsertOne(context.TODO(), bson.D{{"_id", targetSize - 1},
+				{"freespace", cellcapacity}, {"capacity", cellcapacity}, {"numberoffiles", 0}})
+		}
 		ServerState = SNAFU
+	}
+}
+
+func ScaleDown(conn *DBConnectionContext) {
+	if ServerState == Draining {
+		ServerState = ScalingDown
+		targetSize := serverstatus.NumberOfCells - 1
+		err := ScaleStatefulSet(targetSize)
+		if err != nil {
+			fmt.Println("Error scaling sts")
+			ServerState = SNAFU
+			return
+		} else {
+			podname := StatefulSetName + "-" + strconv.Itoa(targetSize)
+			WaitForPod(podname, "Not exists")
+			pruneErr := PrunePVC(targetSize)
+			if pruneErr != nil {
+				fmt.Println("  >> ScaleDown: pruneErr = " + pruneErr.Error())
+			}
+			serverstatus.NumberOfCells = serverstatus.NumberOfCells - 1
+			serverstatus.TotalSpace -= int64(cellCapacity)
+			err = pushServerStatus(&dbConnectionContext)
+			if err != nil {
+				fmt.Println("Error pushing server status")
+				ServerState = SNAFU
+				return
+			}
+			_, err = conn.cellstatus.DeleteOne(context.TODO(), bson.D{{"_id", targetSize}})
+			ServerState = SNAFU
+		}
+	}
+}
+
+func CancelDrain() {
+	ServerState = SNAFU
+}
+
+func Drain(conn *DBConnectionContext) {
+	if ServerState == SNAFU {
+		drainCellId := serverstatus.NumberOfCells - 1
+		fmt.Println("Starting drain...")
+		ServerState = Draining
+		itemsToMove, err := GetCellContents(drainCellId)
+		fmt.Println("     #### DEBUG TIME #### This is what I got as contents: ")
+		fmt.Println(itemsToMove)
+		if err != nil {
+			fmt.Println("     >> Drain: error getting cell contents: " + err.Error())
+			CancelDrain()
+			return
+		}
+		l := len(itemsToMove.Details.Items)
+		i := 0
+		for (ServerState == Draining) && (i < l) {
+			item := itemsToMove.Details.Items[i]
+			cellid := findCellWithFreeSpace(&dbConnectionContext, item.Size)
+			if cellid == drainCellId { // golly! this should not happen!
+				fmt.Println("     >> Drain: no cellid found to move data, that's weird")
+				CancelDrain()
+				return
+			}
+			CopyCell("default", item.Id, drainCellId, cellid)
+			fmt.Println("Updating data in cell " + strconv.Itoa(cellid))
+			updateDirErr := updateDirectoryEntry(&dbConnectionContext, "default", item.Id, drainCellId, cellid)
+			if updateDirErr != nil {
+				fmt.Println("Error updating directory entries!")
+			}
+			i = i + 1
+		}
+		ScaleDown(conn)
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//																														//
+// REST API functions																									//
+//																														//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+func Retrieve(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	fmt.Println("  # controller # Attempting to retrieve value " + vars["id"])
+	cellid, err := getDirectoryEntryCellId(&dbConnectionContext, "default", vars["id"])
+	if err != nil {
+		JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+	} else {
+		res, err := CellGet("default", vars["id"], cellid)
+		if err != nil {
+			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+		} else {
+			JSONResponseFromString(w, "{\"result\":"+res+"}")
+		}
 	}
 }
 
@@ -625,7 +625,7 @@ func Store(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Println("  # controller # Attempting to store value " + vars["id"])
-	lengthOfValue := uint64(len(vars["info"]))
+	lengthOfValue := int64(len(vars["info"]))
 	cellid = findCellWithFreeSpace(&dbConnectionContext, lengthOfValue)
 	if cellid == -1 {
 		JSONResponseFromString(w, "{\"result\":\"'Try later'\"}")
@@ -641,33 +641,87 @@ func Store(w http.ResponseWriter, r *http.Request) {
 				JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
 			} else {
 				addUsedStorage(&dbConnectionContext, lengthOfValue, cellid)
-				serverstatus.UsedSpace += lengthOfValue
 				fmt.Println("serverstatus.UsedSpace updated")
+
+				//
+				// Check Scale Up condition @TODO make separate functions
+				//
 				if (serverstatus.TotalSpace - serverstatus.UsedSpace) < serverstatus.SUT {
-					if(ServerState == SNAFU) {
+					if ServerState == SNAFU {
 						fmt.Println("Scale up condition found")
 						go ScaleUp(&dbConnectionContext)
 					} else {
 						fmt.Println("Scale up condition found, but still scaling or something")
 					}
 				} else {
-					fmt.Println("There is still " + strconv.Itoa(int(serverstatus.TotalSpace - serverstatus.UsedSpace)) + " bytes free")
+					fmt.Println("There is still " + strconv.Itoa(int(serverstatus.TotalSpace-serverstatus.UsedSpace)) + " bytes free")
 				}
-				JSONResponseFromString(w, "{\"result\":\"'OK'\", \"bytes\":"+strconv.FormatUint(lengthOfValue, 10)+"}")
+
+				JSONResponseFromString(w, "{\"result\":\"'OK'\", \"bytes\":"+strconv.FormatInt(lengthOfValue, 10)+"}")
 			}
+		}
+	}
+}
+
+func Delete(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	fmt.Println("  # controller # Attempting to retrieve value " + vars["id"])
+	cellid, err := getDirectoryEntryCellId(&dbConnectionContext, "default", vars["id"])
+	if err != nil {
+		JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+	} else {
+		size, dbErr := removeDirectoryEntry(&dbConnectionContext, "default", vars["id"])
+		fmt.Println(" Size from DB: ")
+		fmt.Println(size)
+		if dbErr != nil {
+			// what do we do here?
+			fmt.Println("  >> Delete : dbErr = " + dbErr.Error())
+			size = 0
+		}
+		deleteErr := CellDelete("default", vars["id"], cellid)
+		if deleteErr != nil {
+			fmt.Println("  >> Delete : deleteErr = " + deleteErr.Error())
+		}
+		removeUsedStorage(&dbConnectionContext, size, cellid)
+
+		//
+		// Check Scale Down condition @TODO make separate functions
+		//
+		if (serverstatus.TotalSpace - serverstatus.UsedSpace) > serverstatus.SDT {
+			if ServerState == SNAFU {
+				fmt.Println("Scale down condition found")
+				go Drain(&dbConnectionContext)
+			} else {
+				fmt.Println("Scale down condition found, but still doing some other shit")
+			}
+		} else {
+			fmt.Println("There is still just " + strconv.Itoa(int(serverstatus.TotalSpace-serverstatus.UsedSpace)) + " bytes free")
+		}
+
+		err = CellDelete("default", vars["key"], cellid)
+		if err != nil {
+			JSONResponseFromString(w, "{\"error\":"+err.Error()+"}")
+		} else {
+			JSONResponseFromString(w, "{\"result\":\"success\"}")
 		}
 	}
 }
 
 func GetServiceStatus(w http.ResponseWriter, r *http.Request) {
 	livingCells := detectLivingCells()
-	JSONResponseFromString(w, "{\"revision\":"+strconv.Itoa(revision)+", \"cells-alive\":"+strconv.Itoa(livingCells)+", " + 
-		"\"numberofcells\":" + strconv.Itoa(serverstatus.NumberOfCells) + ", " +
-		"\"totalspace\":" + strconv.Itoa(int(serverstatus.TotalSpace)) + ", " +
-		"\"usedspace\":" + strconv.Itoa(int(serverstatus.UsedSpace)) + ", " +
-		"\"suthreshold\":" + strconv.Itoa(int(serverstatus.SUT)) + ", " +
-		"\"sdthreshold\":" + strconv.Itoa(int(serverstatus.SDT)) + "}")
+	JSONResponseFromString(w, "{\"revision\":"+strconv.Itoa(revision)+", \"cells-alive\":"+strconv.Itoa(livingCells)+", "+
+		"\"numberofcells\":"+strconv.Itoa(serverstatus.NumberOfCells)+", "+
+		"\"totalspace\":"+strconv.Itoa(int(serverstatus.TotalSpace))+", "+
+		"\"usedspace\":"+strconv.Itoa(int(serverstatus.UsedSpace))+", "+
+		"\"suthreshold\":"+strconv.Itoa(int(serverstatus.SUT))+", "+
+		"\"sdthreshold\":"+strconv.Itoa(int(serverstatus.SDT))+"}")
 }
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//																														//
+// main function																										//
+//																														//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 func main() {
 
@@ -727,14 +781,14 @@ func main() {
 	fmt.Println("Trying to recover status from db...")
 	status, staterr := getServerStatus(&dbConnectionContext)
 	serverstatus = status
-	if(staterr != nil) {
+	if staterr != nil {
 		fmt.Println(" The error trying to recover status from db was: " + staterr.Error())
 	} else {
 		fmt.Println(" The error trying to recover status from db was: none")
 		fmt.Println(serverstatus)
 	}
 
-	if (staterr != nil) {
+	if staterr != nil {
 		fmt.Println("  ... none found, initializing")
 		_ = initializeServerStatus(&dbConnectionContext)
 		//status, _ = getServerStatus(&dbConnectionContext)
@@ -759,11 +813,10 @@ func main() {
 	r.HandleFunc("/{id}/{info}", Delete).Methods("DELETE")
 
 	fmt.Println(" and again: ")
-        fmt.Println(serverstatus)
+	fmt.Println(serverstatus)
 
 	if err := http.ListenAndServe(":"+ControllerPort, r); err != nil {
 		log.Fatal(err)
 	}
-
 
 }
