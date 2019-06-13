@@ -1,0 +1,32 @@
+---
+ apiVersion: extensions/v1beta1
+ kind: Deployment
+ metadata:
+   name: balancer-test-deployment
+ spec:
+   replicas: 2
+   template:
+     metadata:
+       labels:
+         app: balancer-test-deployment
+     spec:
+       containers:
+         - name: balancer-test
+           image: emiliopomaresporras/balancingtest:1
+           ports:
+             - containerPort: 6666
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: balancer-test-service
+  labels:
+    app: balancer-test
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6666
+    targetPort: 6666
+    protocol: TCP
+  selector:
+    app: balancer-test-deployment
