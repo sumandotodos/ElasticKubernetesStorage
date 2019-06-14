@@ -1,7 +1,7 @@
 package main
 
 import (
-//	"os"
+	"os"
 	"log"
 	"strconv"
 	"io"
@@ -12,6 +12,10 @@ import (
 )
 
 const Memory = 100
+
+var CellPort string
+
+var CellDataPath string
 
 type KeyStore struct {
 	freememory int
@@ -131,6 +135,10 @@ func DeleteItem(w http.ResponseWriter, r *http.Request) {
         }
 }
 
+func Contains(w http.ResponseWriter, r *http.Request) {
+	JSONResponseFromString(w, "{\"result\":false}")
+}
+
 func ListStore(w http.ResponseWriter, r *http.Request) {
 	JSONResponseFromString(w, "{\"result\":"+keyStore.String()+"}")
 }
@@ -152,7 +160,17 @@ func Initialize(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	StoragePort := "7777"
+
+	CellPort = os.Getenv("PORT")
+	if CellPort == "" {
+		CellPort = "7777"
+	}
+
+	CellDataPath = os.Getenv("DATAPATH")
+	if CellDataPath == "" {
+		CellDataPath = "/data"
+	}
+
 	keyStore = new(KeyStore)
 	keyStore.Initialize() // cambiar a restore from file
 	r := mux.NewRouter()
@@ -160,12 +178,13 @@ func main() {
 	r.HandleFunc("/healthcheck", HealthCheck).Methods("GET")
 	r.HandleFunc("/initialize", Initialize).Methods("GET")
 	r.HandleFunc("/contents", ListStore).Methods("GET")
+	r.HandleFunc("/contains/{id}/{info}", Contains).Methods("GET")
 	r.HandleFunc("/{id}/{info}", StoreItem).Methods("POST")
 	r.HandleFunc("/{id}/{info}", DeleteItem).Methods("DELETE")
 	r.HandleFunc("{id}/{info}", UpdateItem).Methods("PUT")
 	r.HandleFunc("/{id}/{info}", RetrieveItem).Methods("GET")
-	fmt.Println("Storage cell started at port " + StoragePort)
-	if err := http.ListenAndServe(":" + StoragePort, r); err != nil {
+	fmt.Println("Storage cell started at port " + CellPort)
+	if err := http.ListenAndServe(":" + CellPort, r); err != nil {
                 log.Fatal(err)
         }
 }
