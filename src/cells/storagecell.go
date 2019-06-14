@@ -5,6 +5,8 @@ import (
 	"log"
 	"strconv"
 	"io"
+	"io/ioutil"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"bytes"
@@ -16,6 +18,11 @@ const Memory = 100
 var CellPort string
 
 var CellDataPath string
+
+type KeyValue struct {
+	Key	string	`json:"key"`
+	Value	string  `json:"value"`
+}
 
 type KeyStore struct {
 	freememory int
@@ -89,6 +96,29 @@ func JSONResponseFromString(w http.ResponseWriter, res string) {
 
 
 
+
+
+// File ops
+
+func StoreKeyValue(key string, value string) error {
+
+	data := &KeyValue{Key:key,Value:value}
+
+	length := len(value)
+
+	filedata, _ := json.Marshal(data)
+
+	filepath := CellDataPath + "/" + key + "-" + strconv.Itoa(length) + ".json"
+
+	return ioutil.WriteFile(filepath, filedata, 0644)
+
+}
+
+
+
+
+
+
 // REST API Handlers
 func HealthCheck(w http.ResponseWriter, r *http.Request) {
         fmt.Fprintln(w, "{'status':'alive'}")
@@ -105,11 +135,11 @@ func StoreItem(w http.ResponseWriter, r *http.Request) {
 
 	vars := mux.Vars(r)
         fmt.Println("  # cell # Attempting to store value " + vars["info"] + " in key " + vars["id"])
-        success := keyStore.Store(vars["id"], vars["info"])
-        if(success) {
+        err := StoreKeyValue(vars["id"], vars["info"])    //keyStore.Store(vars["id"], vars["info"])
+        if(err == nil) {
                 JSONResponseFromString(w, "{\"result\":\"'success'\"}")
         } else {
-                JSONResponseFromString(w, "{\"result\":\"not ok\"}")
+                JSONResponseFromString(w, "{\"error\":\""+err.Error()+"\"}")
         }
 }
 
@@ -156,7 +186,7 @@ func UpdateItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func Initialize(w http.ResponseWriter, r *http.Request) {
-	keyStore.Initialize()
+	//keyStore.Initialize()
 }
 
 func main() {
